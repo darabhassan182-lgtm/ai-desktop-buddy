@@ -797,11 +797,14 @@
 
     // Normalize size/feet/facing: scale to target height, drop feet to y=0,
     // and face +Z (Mixamo faces -Z, so yaw the model 180° inside the group).
-    var bb = new THREE.Box3().setFromObject(clone);
-    var srcH = (bb.max.y - bb.min.y) || 1;
-    var s = (isMgr ? CHAR_H_MGR : CHAR_H) / srcH;
+    // The GLB root ("Character") already scales the ~180cm Mixamo skeleton by 0.01 → ~1.8m tall,
+    // with its origin at the feet. Box3.setFromObject on a SKINNED mesh is unreliable (it measured
+    // the raw ~44-unit bind geometry → giant characters), so scale by a FIXED factor off the
+    // known ~1.8m natural height and keep the feet at y=0.
+    var NATURAL_H = 1.8;
+    var s = (isMgr ? CHAR_H_MGR : CHAR_H) / NATURAL_H;
     clone.scale.setScalar(s);
-    clone.position.y = -bb.min.y * s;
+    clone.position.y = 0;
     clone.rotation.y = Math.PI;
     ud.rig.add(clone);
     ud.model = clone;
