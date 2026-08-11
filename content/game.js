@@ -292,7 +292,7 @@
   function buildScene() {
     scene = new THREE.Scene();
     scene.background = new THREE.Color(COL.bg);
-    scene.fog = new THREE.Fog(new THREE.Color(COL.bg), 26, 90);
+    scene.fog = new THREE.Fog(new THREE.Color(COL.bg), 48, 155);
 
     // ground slab (catches shadows in corridors + atrium)
     var ground = new THREE.Mesh(new THREE.PlaneGeometry(72, 66), MAT.corridor);
@@ -314,7 +314,7 @@
   }
 
   function buildLights() {
-    keyLight = new THREE.DirectionalLight('#aebbd6', 1.15);
+    keyLight = new THREE.DirectionalLight('#aebbd6', 2.7);
     keyLight.position.set(-18, 34, -14);
     keyLight.target.position.set(0, 0, 2);
     keyLight.castShadow = true;
@@ -325,23 +325,23 @@
     keyLight.shadow.normalBias = 0.02;
     scene.add(keyLight); scene.add(keyLight.target);
 
-    hemi = new THREE.HemisphereLight('#3a4560', '#05060a', 0.35);
+    hemi = new THREE.HemisphereLight('#506588', '#0a0d14', 1.0);
     scene.add(hemi);
-    amb = new THREE.AmbientLight('#0b0e14', 0.6);
+    amb = new THREE.AmbientLight('#2c3550', 1.05);
     scene.add(amb);
 
     // per-office accent point lights (intensity driven by roomGlow)
     for (var i = 0; i < SPECIALISTS.length; i++) {
       var id = SPECIALISTS[i], A = AGENTS[id];
-      var p = new THREE.PointLight(A.accent, 0.15, 7, 2.0);
+      var p = new THREE.PointLight(A.accent, 0.5, 9, 2.0);
       p.position.set(A.deskPos[0], 2.2, A.deskPos[1]);
       p.castShadow = false;
       scene.add(p); roomLights[id] = p;
     }
     // atrium neutral downlight + Agent Sea accent
-    var dl = new THREE.PointLight(COL.neutral, 0.5, 20, 2);
+    var dl = new THREE.PointLight(COL.neutral, 1.4, 26, 2);
     dl.position.set(0, 6, 0); scene.add(dl);
-    atriumAccent = new THREE.PointLight(ACCENTS.manager, 0.4, 14, 2);
+    atriumAccent = new THREE.PointLight(ACCENTS.manager, 0.7, 16, 2);
     atriumAccent.position.set(0, 3, 0); scene.add(atriumAccent);
     // coffee warm point
     coffeeLight = new THREE.PointLight(COL.warm, 0.35, 5, 2);
@@ -1181,7 +1181,7 @@
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.05;
+    renderer.toneMappingExposure = 1.55;
 
     var sz = canvasSize();
     camera = new THREE.PerspectiveCamera(48, sz.w / sz.h, 0.1, 500);
