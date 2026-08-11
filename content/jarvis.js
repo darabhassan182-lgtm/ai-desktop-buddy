@@ -16,9 +16,9 @@
   var audioCtx = null, analyser = null, timeData = null, vadTimer = 0;
   // VAD is ADAPTIVE: a running ambient noise floor + margin + hysteresis over a
   // time-domain RMS level (not a fixed absolute gate), so it tracks mic gain/room.
-  var SILENCE_HANG = 500, MIN_UTTER = 200, MAX_UTTER = 8000;
+  var SILENCE_HANG = 900, MIN_UTTER = 200, MAX_UTTER = 8000, STOP_HANG = 420;
   var noiseFloor = 0.02, FLOOR_ALPHA = 0.05;                     // running ambient RMS (0..1)
-  var START_MARGIN = 0.020, START_MULT = 1.9, START_MIN = 0.045; // entry gate = max(floor+margin, floor*mult, min)
+  var START_MARGIN = 0.015, START_MULT = 1.6, START_MIN = 0.040; // entry gate = max(floor+margin, floor*mult, min) — sensitive
   var SPEECH_MULT = 1.8, SPEECH_MIN = 0.085;                     // raised entry gate while Sea speaks (anti self-interrupt)
   // Voice-ID gate: only verify clips ≥ VID_MIN_MS; if verify exceeds VID_TIMEOUT, fail OPEN.
   var VID_TIMEOUT = 1200, VID_MIN_MS = 1100;
@@ -49,28 +49,27 @@
   // Detect an utterance: start when you begin talking, stop after a short pause.
   // While Sea is speaking we still listen (higher gate) but only act on "stop".
   function handleVAD(amp) {
-    if (!listening) return;
-    // FULLY DEAF while Sea is speaking (and for the cooldown after) — it can never
-    // capture its own voice and reply to itself. Interrupt with the 🎙️ button instead.
-    if (seaBusy()) { if (capturing) endCapture(true); return; }
+    if (!listening || pttActive) return;   // push-to-talk takes over the mic when held
     var now = Date.now();
-    var startT = Math.max(noiseFloor + START_MARGIN, noiseFloor * START_MULT, START_MIN);  // adaptive entry gate
-    // Learn the ambient floor only when idle AND quiet (never fold speech into it).
-    if (!capturing && amp < startT) {
+    var duringSpeech = seaBusy();           // while Sea speaks / cools down, listen ONLY for "stop"
+    var startT = Math.max(noiseFloor + START_MARGIN, noiseFloor * START_MULT, START_MIN);
+    var entryT = duringSpeech ? Math.max(startT * SPEECH_MULT, SPEECH_MIN) : startT;
+    if (!capturing && !duringSpeech && amp < startT) {
       noiseFloor += FLOOR_ALPHA * (amp - noiseFloor);
-      if (noiseFloor < 0.004) noiseFloor = 0.004; else if (noiseFloor > 0.12) noiseFloor = 0.12;
+      if (noiseFloor < 0.004) noiseFloor = 0.004; else if (noiseFloor > 0.08) noiseFloor = 0.08;
     }
     if (!capturing) {
-      if (amp >= startT) { beginCapture(false); speechPeak = amp; }
+      if (amp >= entryT) { beginCapture(duringSpeech); speechPeak = amp; }
     } else {
-      // Endpoint RELATIVE to how loud YOU just were, so stopping is detected even if
-      // background keeps some noise present (fixes "doesn't stop listening").
+      // Endpoint RELATIVE to how loud YOU just were (robust to background noise).
       speechPeak = Math.max(amp, speechPeak * 0.992);
       var silenceT = Math.max(noiseFloor + 0.010, speechPeak * 0.35);
       if (amp >= silenceT) silenceStart = 0;
       else if (!silenceStart) silenceStart = now;
       var dur = now - captureStart, sil = silenceStart ? now - silenceStart : 0;
-      if ((sil >= SILENCE_HANG && dur >= MIN_UTTER) || dur >= MAX_UTTER) endCapture(false);
+      var hang = captureDuringSpeech ? STOP_HANG : SILENCE_HANG;   // "stop" snappy; commands wait longer so you're not cut off
+      var maxU = captureDuringSpeech ? 2600 : MAX_UTTER;
+      if ((sil >= hang && dur >= MIN_UTTER) || dur >= maxU) endCapture(false);
     }
   }
 
@@ -272,6 +271,49 @@
       }, 220);   // let a just-opened stream paint its first frame
     });
   }
+
+  /* ---------- push-to-talk: HOLD SPACE to talk (no VAD — 100% reliable) ---------- */
+  var pttStream = null, pttRec = null, pttChunks = [], pttActive = false;
+  function isTyping(e) { var t = e && e.target; return !!(t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)); }
+  function ensurePttStream() {
+    if (pttStream) return Promise.resolve(pttStream);
+    return navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: false } })
+      .then(function (s) { pttStream = s; return s; });
+  }
+  function pttStart() {
+    if (pttActive) return;
+    ensurePttStream().then(function (s) {
+      if (!s || pttActive) return;
+      pttActive = true; pttChunks = [];
+      try { pttRec = new MediaRecorder(s); } catch (e) { pttActive = false; return; }
+      pttRec.ondataavailable = function (e) { if (e.data && e.data.size) pttChunks.push(e.data); };
+      pttRec.onstop = function () {
+        var blob = new Blob(pttChunks, { type: (pttRec && pttRec.mimeType) || 'audio/webm' });
+        if (!blob.size) { clearCue(); return; }
+        cue();
+        try { nx.stopSpeaking && nx.stopSpeaking(); } catch (e) {}   // your voice always wins
+        Promise.resolve(window.NexusVoice.transcribe(blob)).then(function (text) {
+          if (text) { var s2 = $('subtitle'); if (s2) { s2.textContent = text; s2.classList.add('show'); } try { nx.ask(text); } catch (e) {} }
+          else clearCue();
+        }).catch(function () { clearCue(); });
+      };
+      try { pttRec.start(); } catch (e) { pttActive = false; return; }
+      var sub = $('subtitle'); if (sub) { sub.textContent = '🎙️ Listening… (release Space to send)'; sub.classList.add('show'); }
+      W('setListening', true);
+    }).catch(function () { toast('Microphone blocked — allow it in System Settings → Privacy → Microphone.'); });
+  }
+  function pttStop() {
+    if (!pttActive) return; pttActive = false;
+    try { if (pttRec && pttRec.state !== 'inactive') pttRec.stop(); } catch (e) {}
+  }
+  document.addEventListener('keydown', function (e) {
+    if (e.repeat || isTyping(e)) return;
+    if (e.code === 'Space' || e.keyCode === 32) { e.preventDefault(); pttStart(); }
+  });
+  document.addEventListener('keyup', function (e) {
+    if (isTyping(e)) return;
+    if (e.code === 'Space' || e.keyCode === 32) { e.preventDefault(); pttStop(); }
+  });
 
   var jbtn = $('jarvisBtn'); if (jbtn) jbtn.addEventListener('click', toggleHandsFree);
   var vbtn = $('visionBtn'); if (vbtn) vbtn.addEventListener('click', function () {
