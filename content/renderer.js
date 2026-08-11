@@ -613,6 +613,29 @@
 
     // 5. Start at rest.
     W('setManager', 'idle');
+
+    // 6. Morning briefing — first open each day at/after 9am Pakistan time (UTC+5).
+    scheduleMorningBriefing();
+  }
+
+  var briefingBusy = false;
+  function pktParts() {
+    var p = new Date(Date.now() + 5 * 3600 * 1000);   // shift to PKT wall-clock
+    return { date: p.getUTCFullYear() + '-' + (p.getUTCMonth() + 1) + '-' + p.getUTCDate(), hour: p.getUTCHours() };
+  }
+  function maybeBriefing() {
+    if (briefingBusy || !nx || typeof nx.briefing !== 'function') return;
+    var p = pktParts();
+    var last = null; try { last = localStorage.getItem('nexus_briefing_date'); } catch (_) {}
+    if (!(p.hour >= 9 && last !== p.date)) return;
+    briefingBusy = true;
+    Promise.resolve(nx.briefing()).then(function (r) {
+      if (r && r.ok) { try { localStorage.setItem('nexus_briefing_date', p.date); } catch (_) {} }
+    }).catch(function () {}).then(function () { briefingBusy = false; });
+  }
+  function scheduleMorningBriefing() {
+    setTimeout(maybeBriefing, 3500);            // shortly after boot (once the app settles)
+    setInterval(maybeBriefing, 10 * 60 * 1000); // and catch the case where it's left open past 9am
   }
 
   if (document.readyState === 'loading') {

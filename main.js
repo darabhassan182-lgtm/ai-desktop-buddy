@@ -424,6 +424,48 @@ ipcMain.handle('gmail:test', async () => {
   try { const id = await sendGmail(g.user, 'Nexus test ✓', 'This is a test from Agent Sea — email sending works.'); return { ok: true, id }; }
   catch (e) { return { ok: false, error: (e && e.message) || String(e) }; }
 });
+
+// --- Morning briefing: urgent unread email from the past day ----------------
+ipcMain.handle('orch:briefing', async (event) => {
+  const emit = (evt, payload) => { try { event.sender.send('orch:' + evt, payload); } catch (_) {} };
+  if (!client) return { ok: false, error: 'no-key' };
+  if (!gmailConfig().oauth) return { ok: false, error: 'gmail-not-connected' };
+  const sys = 'You are Agent Sea preparing the user\'s MORNING BRIEFING. Use gmail_search to find UNREAD emails from the past day (query exactly: is:unread newer_than:1d). Decide which are URGENT — from clients, a boss, or important people; deadlines, requests, or anything time-sensitive that needs a prompt reply. If useful, gmail_read the top one or two. Then output PLAIN TEXT only: one urgent item per line as "• Sender — Subject — why it matters (1 short clause)", most urgent first, at most 6 lines. If nothing is urgent, output exactly "No urgent unread emails from the past day." End with a final line like "— N urgent of M unread." No preamble, no markdown headers.' + buildMemoryBlock();
+  const messages = [{ role: 'user', content: 'Prepare my morning briefing of urgent unread emails from the past day.' }];
+  emit('manager', { state: 'thinking' });
+  emit('agent', { agentId: 'inbox', state: 'searching' });
+  let finalText = '';
+  try {
+    for (let turn = 0; turn < 6; turn++) {
+      const stream = client.messages.stream({ model: 'claude-opus-4-8', max_tokens: 1500, system: sys, tools: [GMAIL_SEARCH_TOOL, GMAIL_READ_TOOL], messages });
+      const msg = await stream.finalMessage();
+      messages.push({ role: 'assistant', content: msg.content });
+      const toolUses = msg.content.filter((b) => b.type === 'tool_use');
+      if (msg.stop_reason === 'tool_use' && toolUses.length) {
+        const results = [];
+        for (const tu of toolUses) {
+          const inp = tu.input || {};
+          try {
+            if (tu.name === 'gmail_search') { const f = await gmailSearch(inp.query, inp.max); results.push({ type: 'tool_result', tool_use_id: tu.id, content: f.length ? f.map((m, i) => (i + 1) + '. id=' + m.id + ' | From: ' + m.from + ' | Subject: ' + m.subject + ' | ' + m.date + '\n   ' + m.snippet).join('\n') : 'No matching emails.' }); }
+            else if (tu.name === 'gmail_read') { const m = await gmailRead(inp.id); results.push({ type: 'tool_result', tool_use_id: tu.id, content: 'From: ' + m.from + '\nSubject: ' + m.subject + '\nDate: ' + m.date + '\n\n' + m.body }); }
+            else results.push({ type: 'tool_result', tool_use_id: tu.id, content: 'Unknown tool.', is_error: true });
+          } catch (e) { results.push({ type: 'tool_result', tool_use_id: tu.id, content: 'Failed: ' + ((e && e.message) || e), is_error: true }); }
+        }
+        messages.push({ role: 'user', content: results });
+        continue;
+      }
+      finalText = msg.content.filter((b) => b.type === 'text').map((b) => b.text).join('\n').trim();
+      break;
+    }
+    emit('agent', { agentId: 'inbox', state: 'done' });
+    emit('display', { kind: 'info', title: 'Morning Briefing — Urgent Unread', body: finalText || 'No urgent unread emails.' });
+    const first = (finalText || '').split('\n').filter(Boolean);
+    const spoken = 'Good morning. ' + (/^no urgent/i.test(finalText) ? 'No urgent unread emails from the past day.' : ('You have ' + Math.max(0, first.filter((l) => l.trim().startsWith('•')).length) + ' urgent email' + (first.filter((l) => l.trim().startsWith('•')).length === 1 ? '' : 's') + ' this morning; the briefing is on screen.'));
+    emit('manager', { state: 'speaking' });
+    speak(spoken, () => emit('manager', { state: 'idle' }));
+    return { ok: true, text: finalText };
+  } catch (e) { emit('agent', { agentId: 'inbox', state: 'idle' }); emit('manager', { state: 'idle' }); return { ok: false, error: (e && e.message) || String(e) }; }
+});
 ipcMain.handle('update:check', async () => {
   const local = readManifest(activeContentDir());
   try {

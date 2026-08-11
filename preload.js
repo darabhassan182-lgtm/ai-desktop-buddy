@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld('nexus', {
   ask: (text) => ipcRenderer.invoke('orch:ask', text),
   askVision: (text, image) => ipcRenderer.invoke('orch:askVision', { text, image }),
   transcribe: (b64, mime) => ipcRenderer.invoke('stt:transcribe', b64, mime),
+  briefing: () => ipcRenderer.invoke('orch:briefing'),
   on: (evt, cb) => { if (EVENTS.includes(evt)) ipcRenderer.on('orch:' + evt, (_e, payload) => cb(payload)); },
   stopSpeaking: () => ipcRenderer.send('buddy:stopSpeaking'),
   hasKey: () => ipcRenderer.invoke('key:has'),
