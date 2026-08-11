@@ -11,7 +11,7 @@
   var modelPromise = null, cosSim = null;
   var ref = null;            // Float32Array(512) — averaged reference embedding
   var samples = [];          // this-session enrollment embeddings (for averaging)
-  var enabled = false, threshold = 0.80, nSamples = 0;
+  var enabled = false, threshold = 0.72, nSamples = 0;   // forgiving default — avoids false-rejecting the owner
 
   try {
     var r = localStorage.getItem(LS.ref); if (r) ref = Float32Array.from(JSON.parse(r));

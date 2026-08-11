@@ -267,7 +267,10 @@ function createWindow() {
     width: 1280, height: 820, minWidth: 720, minHeight: 560,
     resizable: true, maximizable: true, fullscreenable: true,
     title: 'Nexus', backgroundColor: '#0b0e17',
-    webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false },
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false,
+      backgroundThrottling: false,   // keep listening/timers running when Nexus is behind another app
+    },
   });
   mainWindow.loadFile(path.join(activeContentDir(), 'index.html'));
 }

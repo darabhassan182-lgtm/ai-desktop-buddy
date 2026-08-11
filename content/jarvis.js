@@ -13,9 +13,15 @@
   }
 
   /* ---------- mic level + voice-activity detection (VAD) ---------- */
-  var audioCtx = null, analyser = null, freqData = null, rafId = 0;
-  // VAD thresholds (amp is 0..1). Tuned for close talking.
-  var START_AMP = 0.075, SILENCE_AMP = 0.05, SILENCE_HANG = 750, MIN_UTTER = 350, MAX_UTTER = 12000;
+  var audioCtx = null, analyser = null, timeData = null, vadTimer = 0;
+  // VAD is ADAPTIVE: a running ambient noise floor + margin + hysteresis over a
+  // time-domain RMS level (not a fixed absolute gate), so it tracks mic gain/room.
+  var SILENCE_HANG = 500, MIN_UTTER = 200, MAX_UTTER = 12000;
+  var noiseFloor = 0.02, FLOOR_ALPHA = 0.05;                     // running ambient RMS (0..1)
+  var START_MARGIN = 0.020, START_MULT = 1.9, START_MIN = 0.045; // entry gate = max(floor+margin, floor*mult, min)
+  var SPEECH_MULT = 1.8, SPEECH_MIN = 0.085;                     // raised entry gate while Sea speaks (anti self-interrupt)
+  // Voice-ID gate: only verify clips ≥ VID_MIN_MS; if verify exceeds VID_TIMEOUT, fail OPEN.
+  var VID_TIMEOUT = 1200, VID_MIN_MS = 1100;
   var capturing = false, captureStart = 0, silenceStart = 0, aborted = false, captureDuringSpeech = false;
 
   function startMeter(stream) {
@@ -23,20 +29,22 @@
       audioCtx = new (window.AudioContext || window.webkitAudioContext)();
       var src = audioCtx.createMediaStreamSource(stream);
       analyser = audioCtx.createAnalyser(); analyser.fftSize = 256;
-      freqData = new Uint8Array(analyser.frequencyBinCount);
-      src.connect(analyser); loopMeter();
+      timeData = new Uint8Array(analyser.fftSize);   // time-domain samples for RMS
+      src.connect(analyser);
+      if (vadTimer) clearInterval(vadTimer);
+      vadTimer = setInterval(tick, 45);   // a timer (not requestAnimationFrame) so listening keeps running when Nexus is in the background
     } catch (e) {}
   }
-  function loopMeter() {
-    rafId = requestAnimationFrame(loopMeter);
+  function tick() {
     if (!analyser) return;
-    analyser.getByteFrequencyData(freqData);
-    var sum = 0; for (var i = 0; i < freqData.length; i++) sum += freqData[i];
-    var amp = sum / freqData.length / 255;
-    W('setLevel', amp);
+    try { if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume(); } catch (e) {}
+    analyser.getByteTimeDomainData(timeData);   // time domain → sharp silence edge
+    var sum = 0; for (var i = 0; i < timeData.length; i++) { var v = (timeData[i] - 128) / 128; sum += v * v; }
+    var amp = Math.sqrt(sum / timeData.length); // RMS loudness, 0..1
+    W('setLevel', Math.min(1, amp * 3));        // scale for the HUD ring only
     handleVAD(amp);
   }
-  function stopMeter() { if (rafId) cancelAnimationFrame(rafId); rafId = 0; try { audioCtx && audioCtx.close(); } catch (e) {} audioCtx = null; analyser = null; W('setLevel', 0); }
+  function stopMeter() { if (vadTimer) clearInterval(vadTimer); vadTimer = 0; try { audioCtx && audioCtx.close(); } catch (e) {} audioCtx = null; analyser = null; W('setLevel', 0); }
 
   // Detect an utterance: start when you begin talking, stop after a short pause.
   // While Sea is speaking we still listen (higher gate) but only act on "stop".
@@ -44,11 +52,18 @@
     if (!listening) return;
     var now = Date.now();
     var duringSpeech = seaBusy();
-    var startT = duringSpeech ? START_AMP * 2.2 : START_AMP;  // avoid triggering on Sea's own bleed
+    var startT = Math.max(noiseFloor + START_MARGIN, noiseFloor * START_MULT, START_MIN);  // adaptive entry gate
+    var silenceT = Math.max(noiseFloor + 0.008, startT * 0.55);                            // exit gate (< entry → hysteresis)
+    var entryT = duringSpeech ? Math.max(startT * SPEECH_MULT, SPEECH_MIN) : startT;       // raise gate vs Sea's bleed
+    // Learn the ambient floor only when idle AND quiet (never fold speech/Sea into it).
+    if (!capturing && !duringSpeech && amp < startT) {
+      noiseFloor += FLOOR_ALPHA * (amp - noiseFloor);
+      if (noiseFloor < 0.004) noiseFloor = 0.004; else if (noiseFloor > 0.12) noiseFloor = 0.12;
+    }
     if (!capturing) {
-      if (amp >= startT) beginCapture(duringSpeech);
+      if (amp >= entryT) beginCapture(duringSpeech);
     } else {
-      if (amp >= SILENCE_AMP) silenceStart = 0;
+      if (amp >= silenceT) silenceStart = 0;
       else if (!silenceStart) silenceStart = now;
       var dur = now - captureStart, sil = silenceStart ? now - silenceStart : 0;
       var maxU = captureDuringSpeech ? 2600 : MAX_UTTER;   // mid-speech we only need a short "stop"
@@ -66,7 +81,7 @@
     if (nx && typeof nx.on === 'function') nx.on('manager', function (p) {
       var st = p && p.state;
       if (st === 'speaking') seaSpeaking = true;
-      else { if (seaSpeaking) speakCooldownUntil = Date.now() + 700; seaSpeaking = false; }
+      else { if (seaSpeaking) speakCooldownUntil = Date.now() + 300; seaSpeaking = false; }
     });
   } catch (e) {}
   function seaBusy() { return seaSpeaking || Date.now() < speakCooldownUntil; }
@@ -91,13 +106,13 @@
     rec.ondataavailable = function (e) { if (e.data && e.data.size) chunks.push(e.data); };
     rec.onstop = function () {
       capturing = false;
-      var during = captureDuringSpeech;
+      var during = captureDuringSpeech, utterMs = Date.now() - captureStart;
       if (aborted || !listening) return;
       var blob = new Blob(chunks, { type: (rec && rec.mimeType) || 'audio/webm' });
       if (!blob.size) return;
-      gateAndHandle(blob, during);
+      gateAndHandle(blob, during, utterMs);
     };
-    try { rec.start(); } catch (e) { capturing = false; }
+    try { rec.start(250); } catch (e) { capturing = false; }   // stream chunks: smaller final flush, no tiny-blob drops
   }
   function endCapture(discard) {
     aborted = !!discard;
@@ -136,19 +151,29 @@
     toast('Stopped.');
   }
 
-  // Speaker gate: if "only obey my voice" is on, verify the utterance is the
-  // owner before acting. During Sea's speech we skip the gate for a fast "stop".
-  function gateAndHandle(blob, duringSpeech) {
+  function cue() { var s = $('subtitle'); if (s) { s.textContent = '…'; s.classList.add('show'); } }
+  function clearCue() { var s = $('subtitle'); if (s && s.textContent === '…') s.classList.remove('show'); }
+
+  // Speaker gate: verify the owner's voice (if enabled) IN PARALLEL with transcription
+  // so it adds no latency, with a timeout that fails OPEN so it never drops your command.
+  function gateAndHandle(blob, duringSpeech, utterMs) {
     if (duringSpeech) { transcribeAndHandle(blob, true); return; }
+    cue();   // instant "heard you" feedback so it never feels stuck
     var vid = window.NexusVoiceID;
-    if (vid && vid.isEnabled && vid.isEnabled()) {
-      Promise.resolve(vid.verify(blob)).then(function (res) {
-        if (!res || res.match) transcribeAndHandle(blob, false);   // owner (or fail-open)
-        // else: not the owner's voice → ignore silently
-      }).catch(function () { transcribeAndHandle(blob, false); });
-    } else {
-      transcribeAndHandle(blob, false);
-    }
+    var tp = Promise.resolve(window.NexusVoice.transcribe(blob)).catch(function () { return ''; });
+    var useVid = vid && vid.isEnabled && vid.isEnabled() && utterMs >= VID_MIN_MS;
+    if (!useVid) { tp.then(function (text) { if (text) handleHeard(text); else clearCue(); }); return; }
+    var vp = new Promise(function (resolve) {
+      var done = false, to = setTimeout(function () { if (!done) { done = true; resolve({ match: true }); } }, VID_TIMEOUT);
+      Promise.resolve(vid.verify(blob)).then(function (r) { if (!done) { done = true; clearTimeout(to); resolve(r || { match: true }); } })
+        .catch(function () { if (!done) { done = true; clearTimeout(to); resolve({ match: true }); } });
+    });
+    Promise.all([tp, vp]).then(function (a) {
+      var text = a[0], res = a[1];
+      if (!text) { clearCue(); return; }
+      if (!res || res.match) handleHeard(text);   // owner (or fail-open)
+      else clearCue();                            // not the owner → drop silently
+    });
   }
   function transcribeAndHandle(blob, duringSpeech) {
     Promise.resolve(window.NexusVoice.transcribe(blob)).then(function (text) {
@@ -163,14 +188,14 @@
     if (!raw) return;
     // Sleep phrases end the conversation → require "Sea" again.
     if (isAwake() && /\b(go to sleep|stop listening|that'?s all|that is all|never mind|stand down|dismiss)\b/i.test(raw)) {
-      sleep(); toast('Standing by — say “Sea” to wake me.'); return;
+      sleep(); clearCue(); toast('Standing by — say “Sea” to wake me.'); return;
     }
     var cmd;
     if (isAwake()) {
       var s = stripWake(raw); cmd = (s !== null) ? s : raw;   // wake word optional while awake
     } else {
       cmd = stripWake(raw);
-      if (cmd === null) return;                               // not addressed to Sea
+      if (cmd === null) { clearCue(); return; }               // not addressed to Sea
     }
     keepAwake();
     if (!cmd) { toast('Yes?'); return; }                     // just "Sea" → wait for the command
