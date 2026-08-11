@@ -1,5 +1,5 @@
 {
-  "version": "0.15.0",
+  "version": "0.16.0",
   "files": [
     "index.html",
     "styles.css",
@@ -9,6 +9,10 @@
     "memory.js",
     "memory.css",
     "jarvis.js",
-    "jarvis.css"
+    "jarvis.css",
+    "display.js",
+    "display.css",
+    "leaflet.js",
+    "leaflet.css"
   ]
 }

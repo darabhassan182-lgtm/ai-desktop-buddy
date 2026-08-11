@@ -1,7 +1,7 @@
 // Secure bridge — exposes window.nexus to the UI (renderer.js / game.js / memory.js).
 const { contextBridge, ipcRenderer } = require('electron');
 
-const EVENTS = ['listening', 'transcript', 'manager', 'route', 'agent', 'delta', 'answer', 'error', 'memory', 'notice'];
+const EVENTS = ['listening', 'transcript', 'manager', 'route', 'agent', 'delta', 'answer', 'error', 'memory', 'notice', 'display'];
 
 contextBridge.exposeInMainWorld('nexus', {
   ask: (text) => ipcRenderer.invoke('orch:ask', text),

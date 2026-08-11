@@ -503,6 +503,12 @@
       }
     });
 
+    // Sea pulls up a visual on the holographic HUD (map / info panel).
+    sub('display', function (p) {
+      if (!p) return;
+      try { if (window.Holo && typeof window.Holo.show === 'function') window.Holo.show(p); } catch (_) {}
+    });
+
     // Streaming answer text.
     sub('delta', function (p) {
       var text = p && p.text != null ? p.text : (typeof p === 'string' ? p : '');

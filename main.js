@@ -32,6 +32,7 @@ const DIRECTOR_SYSTEM = `You are Agent Sea, the Director of an AI studio. You ha
 - inbox (Echo): drafting Slack messages and email replies
 - api (Wire): API calls and automation tasks
 You also have a long-term MEMORY. Use the \`remember\` tool whenever the user shares durable information (their name, company, preferences, a repeatable process/workflow) so you can act faster next time; use \`forget\` to remove an outdated item by id. Never re-ask for something already in MEMORY, and never ask for a stored credential's value.
+You control the user's HOLOGRAPHIC DISPLAY with the \`show\` tool. Be visual, like Jarvis: whenever a place, city, country, or landmark comes up, call \`show\` with kind 'map' and that place so the map flies to it on screen; when a short summary, list, or set of facts would help, call \`show\` with kind 'info'. Do this proactively and in ADDITION to speaking.
 You are calm, refined, and efficient — like Jarvis from Iron Man. For each request, delegate to the right specialist(s) when needed (you may delegate more than once); for simple things, answer directly. Reply with a VERY brief spoken answer — ideally one sentence, at most two — natural and composed, no markdown, no bullet points, no URLs (it is read aloud). Address the user directly.`;
 
 const DELEGATE_TOOL = {
@@ -64,7 +65,22 @@ const FORGET_TOOL = {
   description: 'Delete a memory item by its id (ids are shown in the MEMORY section).',
   input_schema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
 };
-const DIRECTOR_TOOLS = [DELEGATE_TOOL, REMEMBER_TOOL, FORGET_TOOL];
+const SHOW_TOOL = {
+  name: 'show',
+  description: "Display a visual on the user's holographic HUD, in ADDITION to your brief spoken reply. Use kind 'map' whenever a place, city, country, address, region, or landmark is relevant — the map flies to it and pulses on screen. Use kind 'info' to put a short readable summary, list, or set of facts on screen while you speak. Call this proactively (e.g. mention London → show the London map); your spoken text stays one or two sentences regardless.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      kind: { type: 'string', enum: ['map', 'info'], description: "'map' flies a holographic map to a place; 'info' shows a readable text panel." },
+      query: { type: 'string', description: "For kind=map: the place to fly to, e.g. 'London', 'Eiffel Tower', 'Tokyo, Japan'." },
+      title: { type: 'string', description: 'Short heading for the panel (both kinds).' },
+      body: { type: 'string', description: 'For kind=info: a few short lines of readable content (plain text; newlines allowed).' },
+      zoom: { type: 'number', description: 'Optional map zoom 3–17 (country≈5, city≈11, landmark≈16).' },
+    },
+    required: ['kind'],
+  },
+};
+const DIRECTOR_TOOLS = [DELEGATE_TOOL, REMEMBER_TOOL, FORGET_TOOL, SHOW_TOOL];
 
 // --- Config / API key -------------------------------------------------------
 function configPath() { return path.join(app.getPath('userData'), 'config.json'); }
@@ -208,7 +224,7 @@ function cmpVersions(a, b) {
   for (let i = 0; i < 3; i++) { const d = (pa[i] || 0) - (pb[i] || 0); if (d) return d > 0 ? 1 : -1; }
   return 0;
 }
-const CONTENT_FILES = ['index.html', 'styles.css', 'renderer.js', 'voice.js', 'game.js', 'memory.js', 'memory.css', 'jarvis.js', 'jarvis.css', 'manifest.json'];
+const CONTENT_FILES = ['index.html', 'styles.css', 'renderer.js', 'voice.js', 'game.js', 'memory.js', 'memory.css', 'jarvis.js', 'jarvis.css', 'display.js', 'display.css', 'leaflet.js', 'leaflet.css', 'manifest.json'];
 function syncBundledContent() {
   const src = bundledContentDir(), dst = userContentDir();
   const bundled = readManifest(src), user = readManifest(dst);
@@ -298,11 +314,17 @@ ipcMain.handle('memory:encAvailable', () => encAvailable());
 let sayProc = null;
 function speak(text, onDone) {
   if (sayProc) { try { sayProc.kill(); } catch (_) {} }
-  const clean = (text || '').slice(0, 4000);
+  let clean = (text || '').slice(0, 4000).replace(/\[\[/g, '').replace(/\]\]/g, ''); // strip embedded-command syntax
   if (!clean) { onDone && onDone(); return; }
-  const voice = loadConfig().voice || 'Daniel';   // refined British "Jarvis" voice (macOS built-in)
-  sayProc = execFile('say', ['-v', voice, '-r', '200', clean], (err) => {
-    if (err) { sayProc = execFile('say', ['-r', '195', clean], () => { onDone && onDone(); }); }
+  const cfg = loadConfig();
+  const voice = cfg.voice || 'Daniel';                 // refined British "Jarvis" voice (macOS built-in)
+  const rate  = cfg.voiceRate  != null ? cfg.voiceRate  : 178;  // words/min — deliberate, composed
+  const pitch = cfg.voicePitch != null ? cfg.voicePitch : 28;   // pitch baseline — lower = deeper (Daniel default ~34)
+  const pmod  = cfg.voicePmod  != null ? cfg.voicePmod  : 22;   // pitch modulation — lower = flatter/sharper, more machine-like
+  // Embedded speech commands tune Daniel into a deeper, crisper "Jarvis" register.
+  const tuned = '[[pbas ' + pitch + ']] [[pmod ' + pmod + ']] ' + clean;
+  sayProc = execFile('say', ['-v', voice, '-r', String(rate), tuned], (err) => {
+    if (err) { sayProc = execFile('say', ['-r', '190', clean], () => { onDone && onDone(); }); }
     else { onDone && onDone(); }
   });
 }
@@ -401,6 +423,16 @@ ipcMain.handle('orch:ask', async (event, text) => {
           } else if (tu.name === 'forget') {
             const ok = deleteNote(inp.id);
             results[idx] = { type: 'tool_result', tool_use_id: tu.id, content: ok ? 'Forgotten.' : 'No memory with that id.' };
+          } else if (tu.name === 'show') {
+            const kind = inp.kind === 'info' ? 'info' : 'map';
+            emit('display', {
+              kind,
+              query: String(inp.query || inp.title || '').slice(0, 200),
+              title: String(inp.title || '').slice(0, 120),
+              body: String(inp.body || '').slice(0, 1200),
+              zoom: (typeof inp.zoom === 'number' && isFinite(inp.zoom)) ? Math.max(2, Math.min(18, inp.zoom)) : null,
+            });
+            results[idx] = { type: 'tool_result', tool_use_id: tu.id, content: 'Displayed on the holographic HUD.' };
           } else if (tu.name === 'delegate' && SUBAGENTS[inp.agent]) {
             const agentId = inp.agent;
             emit('route', { agentId, task: inp.task || '', reason: inp.reason || '' });
