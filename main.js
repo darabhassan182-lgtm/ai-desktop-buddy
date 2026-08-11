@@ -407,6 +407,25 @@ ipcMain.handle('voice:test', (e) => {
   return { ok: true };
 });
 
+// --- Speech-to-text: ElevenLabs "Scribe" (reliable cloud STT, same key) ------
+ipcMain.handle('stt:transcribe', async (_e, b64, mime) => {
+  const c = loadConfig();
+  if (!c.elevenKey) return { ok: false, error: 'no-key' };
+  try {
+    const buf = Buffer.from(String(b64 || ''), 'base64');
+    if (!buf.length) return { ok: false, error: 'empty-audio' };
+    const form = new FormData();
+    form.append('file', new Blob([buf], { type: mime || 'audio/webm' }), 'audio.webm');
+    form.append('model_id', 'scribe_v1');
+    const res = await fetch('https://api.elevenlabs.io/v1/speech-to-text', {
+      method: 'POST', headers: { 'xi-api-key': c.elevenKey }, body: form,
+    });
+    if (!res.ok) { const t = await res.text().catch(() => ''); return { ok: false, error: 'HTTP ' + res.status + ' ' + t.slice(0, 140) }; }
+    const d = await res.json();
+    return { ok: true, text: (d && typeof d.text === 'string') ? d.text.trim() : '' };
+  } catch (e) { return { ok: false, error: (e && e.message) || String(e) }; }
+});
+
 // --- Vision: Sea looks at a captured image (screen/camera) and answers ------
 ipcMain.handle('orch:askVision', async (event, payload) => {
   const emit = (evt, p) => { try { event.sender.send('orch:' + evt, p); } catch (_) {} };

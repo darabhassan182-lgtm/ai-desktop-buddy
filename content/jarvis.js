@@ -13,7 +13,7 @@
   }
 
   /* ---------- mic meter → HUD core ---------- */
-  var audioCtx = null, analyser = null, freqData = null, rafId = 0;
+  var audioCtx = null, analyser = null, freqData = null, rafId = 0, windowPeak = 0;
   function startMeter(stream) {
     try {
       audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -28,7 +28,9 @@
     if (!analyser) return;
     analyser.getByteFrequencyData(freqData);
     var sum = 0; for (var i = 0; i < freqData.length; i++) sum += freqData[i];
-    W('setLevel', sum / freqData.length / 255);
+    var amp = sum / freqData.length / 255;
+    if (amp > windowPeak) windowPeak = amp;      // track loudest moment this window
+    W('setLevel', amp);
   }
   function stopMeter() { if (rafId) cancelAnimationFrame(rafId); rafId = 0; try { audioCtx && audioCtx.close(); } catch (e) {} audioCtx = null; analyser = null; W('setLevel', 0); }
 
@@ -61,11 +63,13 @@
   }
   function listenLoop() {
     if (!listening || !loopStream) return;
-    chunks = [];
+    chunks = []; windowPeak = 0;
     try { rec = new MediaRecorder(loopStream); } catch (e) { stopHandsFree(); return; }
     rec.ondataavailable = function (e) { if (e.data && e.data.size) chunks.push(e.data); };
     rec.onstop = function () {
       if (!listening) return;
+      // Skip silent windows — don't spend a cloud transcription on background noise.
+      if (windowPeak < 0.045) { if (listening) listenLoop(); return; }
       var blob = new Blob(chunks, { type: (rec && rec.mimeType) || 'audio/webm' });
       Promise.resolve(window.NexusVoice.transcribe(blob)).then(function (text) {
         if (text) handleHeard(text);
