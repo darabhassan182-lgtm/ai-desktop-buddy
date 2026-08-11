@@ -90,8 +90,8 @@
   var MOTE_COUNT = 140;                // dust motes
 
   var COL = {
-    bg: '#0a0c11', floor: '#14171d', corridor: '#0f1218', atrium: '#181c24',
-    wallExt: '#0c0e13', wallInt: '#16191f', ceiling: '#0b0d12', base: '#080a0e',
+    bg: '#0a0c11', floor: '#252b37', corridor: '#1d222b', atrium: '#282f3b',
+    wallExt: '#1b1f28', wallInt: '#282e38', ceiling: '#151922', base: '#0c0f15',
     glass: '#8fb0d8', desk: '#1b1f27', chair: '#171a21', monitor: '#0a0b0e',
     prop: '#2a303b', pot: '#14171d', leaf: '#243029', leafLit: '#31463a',
     pool: '#cdd8ec', warm: '#e0a040', neutral: '#cdd8ec'
@@ -314,7 +314,7 @@
   }
 
   function buildLights() {
-    keyLight = new THREE.DirectionalLight('#aebbd6', 2.7);
+    keyLight = new THREE.DirectionalLight('#aebbd6', 3.1);
     keyLight.position.set(-18, 34, -14);
     keyLight.target.position.set(0, 0, 2);
     keyLight.castShadow = true;
@@ -327,7 +327,7 @@
 
     hemi = new THREE.HemisphereLight('#506588', '#0a0d14', 1.0);
     scene.add(hemi);
-    amb = new THREE.AmbientLight('#2c3550', 1.05);
+    amb = new THREE.AmbientLight('#2c3550', 1.3);
     scene.add(amb);
 
     // per-office accent point lights (intensity driven by roomGlow)
@@ -1181,7 +1181,7 @@
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.55;
+    renderer.toneMappingExposure = 1.78;
 
     var sz = canvasSize();
     camera = new THREE.PerspectiveCamera(48, sz.w / sz.h, 0.1, 500);
