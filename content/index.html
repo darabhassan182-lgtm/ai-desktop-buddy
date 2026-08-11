@@ -6,6 +6,7 @@
   <meta name="color-scheme" content="light dark" />
   <title>Nexus</title>
   <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="memory.css" />
 </head>
 <body>
   <!-- Full-bleed game canvas behind everything -->
@@ -19,6 +20,7 @@
       <span id="verTag" class="ver">v0.0.0</span>
     </div>
     <div class="topbar-actions">
+      <button id="memoryBtn" class="ghost-btn" type="button" title="Memory" aria-label="Memory">🧠</button>
       <button id="updateBtn" class="ghost-btn" type="button" title="Check for updates" aria-label="Check for updates">⟳</button>
       <button id="settingsBtn" class="ghost-btn" type="button" title="Settings" aria-label="Settings">⚙️</button>
     </div>
@@ -57,8 +59,39 @@
   <!-- Transient toast -->
   <div id="toast" role="status" aria-live="polite"></div>
 
+  <!-- Memory panel -->
+  <div id="memBackdrop"></div>
+  <aside id="memoryPanel" aria-hidden="true" aria-label="Memory">
+    <header class="mem-head">
+      <span class="mem-title">🧠 Memory</span>
+      <button id="memClose" type="button" title="Close">✕</button>
+    </header>
+    <div class="mem-tabs">
+      <button class="mem-tab active" type="button" data-tab="notes">Knowledge</button>
+      <button class="mem-tab" type="button" data-tab="secrets">Keys &amp; secrets</button>
+    </div>
+    <section class="mem-body" data-panel="notes">
+      <form id="noteForm" class="mem-form" autocomplete="off">
+        <input id="noteInput" type="text" placeholder="Remember… e.g. My company is Acme; deploy = npm run ship" />
+        <button type="submit">Add</button>
+      </form>
+      <ul id="noteList" class="mem-list"></ul>
+    </section>
+    <section class="mem-body hidden" data-panel="secrets">
+      <p class="mem-note" id="secNote">Stored encrypted on this Mac (Keychain). Values are never shown or sent to the AI.</p>
+      <form id="secForm" class="mem-form mem-form-col" autocomplete="off">
+        <input id="secName" type="text" placeholder="Name — e.g. stripe" />
+        <input id="secValue" type="password" placeholder="Secret value — e.g. sk_live_…" autocomplete="off" />
+        <input id="secDesc" type="text" placeholder="What it's for (optional)" />
+        <button type="submit">Store securely</button>
+      </form>
+      <ul id="secList" class="mem-list"></ul>
+    </section>
+  </aside>
+
   <script type="module" src="voice.js"></script>
   <script src="game.js"></script>
   <script src="renderer.js"></script>
+  <script src="memory.js"></script>
 </body>
 </html>
