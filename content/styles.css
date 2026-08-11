@@ -493,6 +493,18 @@ button { font-family: inherit; cursor: pointer; }
 .voice-actions button:disabled { opacity: 0.6; cursor: default; }
 .voice-foot { margin: 16px 2px 0; font-size: 12px; line-height: 1.5; color: var(--ink-2); opacity: 0.85; text-align: center; }
 
+/* voice-ID (only obey my voice) */
+.voice-id { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--hairline); }
+.voice-switch { display: flex; align-items: center; gap: 10px; cursor: pointer; font-size: 14px; color: var(--ink); }
+.voice-switch input { width: 18px; height: 18px; accent-color: var(--nova); cursor: pointer; }
+.voice-switch b { color: var(--nova); }
+.voice-id-row { display: flex; gap: 10px; margin: 12px 0 4px; }
+.voice-id-row button { flex: 1; height: 42px; font-size: 13px; font-weight: 600; border-radius: var(--radius-btn); cursor: pointer; color: var(--ink); background: var(--glass-dim); border: 1px solid var(--hairline); transition: background 0.15s var(--ease); }
+.voice-id-row button:hover { background: var(--glass-strong); }
+.voice-id-row button:disabled { opacity: 0.55; cursor: default; }
+.voice-dim { color: var(--ink-2); font-weight: 500; }
+.voice-range { width: 100%; margin: 6px 0 0; accent-color: var(--nova); cursor: pointer; }
+
 /* ---------- Toast ---------- */
 #toast {
   position: fixed;

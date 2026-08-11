@@ -91,9 +91,7 @@
       if (aborted || !listening) return;
       var blob = new Blob(chunks, { type: (rec && rec.mimeType) || 'audio/webm' });
       if (!blob.size) return;
-      Promise.resolve(window.NexusVoice.transcribe(blob)).then(function (text) {
-        if (text) handleHeard(text);
-      }).catch(function () {});
+      gateAndHandle(blob);
     };
     try { rec.start(); } catch (e) { capturing = false; }
   }
@@ -109,6 +107,7 @@
       loopStream = stream; listening = true; sleep();
       var btn = $('jarvisBtn'); if (btn) btn.classList.add('active');
       W('setListening', true); startMeter(loopStream);
+      try { if (window.NexusVoiceID && window.NexusVoiceID.isEnabled()) window.NexusVoiceID.warmup(); } catch (e) {}
       toast('Hands-free on — say “Sea”, then just keep talking.');
     }).catch(function () { toast('Microphone blocked — allow it in System Settings → Privacy → Microphone.'); });
   }
@@ -118,6 +117,25 @@
     endCapture(true);
     try { loopStream && loopStream.getTracks().forEach(function (t) { t.stop(); }); } catch (e) {}
     loopStream = null; stopMeter(); W('setListening', false);
+  }
+
+  // Speaker gate: if "only obey my voice" is on, verify the utterance is the
+  // owner before transcribing/acting. Fail-open (verify returns match on error).
+  function gateAndHandle(blob) {
+    var vid = window.NexusVoiceID;
+    if (vid && vid.isEnabled && vid.isEnabled()) {
+      Promise.resolve(vid.verify(blob)).then(function (res) {
+        if (!res || res.match) transcribeAndHandle(blob);   // owner (or fail-open)
+        // else: not the owner's voice → ignore silently
+      }).catch(function () { transcribeAndHandle(blob); });
+    } else {
+      transcribeAndHandle(blob);
+    }
+  }
+  function transcribeAndHandle(blob) {
+    Promise.resolve(window.NexusVoice.transcribe(blob)).then(function (text) {
+      if (text) handleHeard(text);
+    }).catch(function () {});
   }
 
   function handleHeard(text) {

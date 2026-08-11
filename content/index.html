@@ -78,6 +78,21 @@
         <option value="eleven_multilingual_v2">Cinematic (richest, slight delay)</option>
         <option value="eleven_flash_v2_5">Fast (snappier reply)</option>
       </select>
+
+      <div class="voice-id">
+        <label class="voice-switch">
+          <input id="vidEnable" type="checkbox" />
+          <span>Only obey <b>my</b> voice</span>
+        </label>
+        <div id="vidState" class="voice-state"></div>
+        <div class="voice-id-row">
+          <button id="vidTeach" type="button" class="voice-btn-secondary">🎙 Teach Sea my voice</button>
+          <button id="vidForget" type="button" class="voice-btn-secondary">Forget</button>
+        </div>
+        <label class="voice-label" for="vidStrict">Strictness <span id="vidStrictVal" class="voice-dim"></span></label>
+        <input id="vidStrict" type="range" min="60" max="94" value="80" class="voice-range" />
+      </div>
+
       <div class="voice-actions">
         <button id="voiceTest" type="button" class="voice-btn-secondary">▶ Test voice</button>
         <button id="voiceDone" type="button">Done</button>
@@ -125,6 +140,7 @@
   <script src="display.js"></script>
   <script src="renderer.js"></script>
   <script src="memory.js"></script>
+  <script src="voiceid.js"></script>
   <script src="voice-ui.js"></script>
   <script src="jarvis.js"></script>
 </body>

@@ -1,5 +1,5 @@
 {
-  "version": "0.21.0",
+  "version": "0.22.0",
   "files": [
     "index.html",
     "styles.css",
@@ -13,6 +13,7 @@
     "display.js",
     "display.css",
     "voice-ui.js",
+    "voiceid.js",
     "leaflet.js",
     "leaflet.css"
   ]
