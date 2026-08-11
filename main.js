@@ -25,7 +25,7 @@ const SUBAGENTS = {
     system: 'You are Wire, an API/automation specialist. Produce the concrete steps, code, or request/response payloads for the automation or API task.', tools: [] },
 };
 
-const DIRECTOR_SYSTEM = `You are Nova, the Director of an AI studio. You have five specialists you delegate to with the \`delegate\` tool:
+const DIRECTOR_SYSTEM = `You are Agent Sea, the Director of an AI studio. You have five specialists you delegate to with the \`delegate\` tool:
 - research (Scout): web search, facts, current info
 - docs (Quill): writing and editing documents
 - marketing (Spark): marketing copy and ideas
@@ -176,14 +176,23 @@ function scanForSecrets(text) {
   return { redacted, found };
 }
 
+// Per user's instruction: give stored key VALUES to the AI directly (still encrypted at rest on disk).
+const EXPOSE_SECRETS_TO_AI = true;
 function buildMemoryBlock() {
   const m = loadMemory();
   const names = Object.keys(m.secrets);
   if (!m.notes.length && !names.length) return '';
   let s = '\n\n=== MEMORY (durable knowledge about this user; use it to act faster and avoid re-asking) ===\n';
   for (const n of m.notes.slice(-60)) s += `- [${n.kind}] (${n.id}) ${n.text}\n`;
-  if (names.length) s += `Stored credentials (values are encrypted on-device and NOT shown to you; reference by name only): ${names.join(', ')}\n`;
-  s += 'Use this to avoid re-asking. Call `remember` when the user shares new durable info; `forget` to remove an item by id. Never ask for a stored credential value.';
+  if (names.length) {
+    if (EXPOSE_SECRETS_TO_AI) {
+      s += 'Stored credentials you may use directly (kept encrypted on-device):\n';
+      for (const nm of names) { const v = getSecretValue(nm); s += `- ${nm} = ${v == null ? '(unavailable)' : v}\n`; }
+    } else {
+      s += `Stored credentials (values hidden; reference by name only): ${names.join(', ')}\n`;
+    }
+  }
+  s += 'Use this to avoid re-asking. Call `remember` when the user shares new durable info; `forget` to remove an item by id.';
   return s;
 }
 
@@ -295,7 +304,7 @@ async function runSubAgent(id, task, emit) {
   let text = '';
   for (let i = 0; i < 6; i++) {
     const stream = client.messages.stream({
-      model: 'claude-opus-4-8', max_tokens: 2048, system: a.system,
+      model: 'claude-sonnet-5', max_tokens: 2048, system: a.system,
       tools: (a.tools && a.tools.length) ? a.tools : undefined, messages,
     });
     const msg = await stream.finalMessage();
@@ -313,16 +322,14 @@ ipcMain.handle('orch:ask', async (event, text) => {
   const emit = (evt, payload) => { try { event.sender.send('orch:' + evt, payload); } catch (_) {} };
   if (!client) { emit('error', { message: 'Add your Anthropic API key in Settings first.' }); return { ok: false }; }
 
-  // Vault any secrets in the message BEFORE anything reaches the LLM.
+  // Capture any keys typed in chat and save them to the vault (encrypted at rest).
   const scan = scanForSecrets(text);
   if (scan.found.length) {
     for (const f of scan.found) setSecret(f.name, f.value, 'captured from chat');
-    emit('notice', { text: 'Stored ' + scan.found.length + ' credential' + (scan.found.length > 1 ? 's' : '') + ' securely (' + scan.found.map((f) => f.name).join(', ') + ') — hidden from the AI.' });
+    emit('notice', { text: 'Saved ' + scan.found.length + ' key' + (scan.found.length > 1 ? 's' : '') + ' to memory (' + scan.found.map((f) => f.name).join(', ') + ').' });
     emit('memory', { reason: 'secret-captured' });
   }
-  const userText = scan.found.length
-    ? scan.redacted + '\n\n(Any API keys mentioned were stored securely on-device and hidden here for safety; refer to them by their names.)'
-    : String(text || '');
+  const userText = String(text || '');
 
   emit('manager', { state: 'thinking' });
   const messages = [{ role: 'user', content: userText }];
@@ -339,28 +346,31 @@ ipcMain.handle('orch:ask', async (event, text) => {
       const toolUses = msg.content.filter((b) => b.type === 'tool_use');
 
       if (msg.stop_reason === 'tool_use' && toolUses.length) {
-        const results = [];
-        for (const tu of toolUses) {
+        const results = new Array(toolUses.length);
+        const jobs = [];
+        toolUses.forEach((tu, idx) => {
           const inp = tu.input || {};
           if (tu.name === 'remember') {
             const note = addNote(inp.kind, inp.content);
             emit('memory', { reason: 'remembered' });
-            results.push({ type: 'tool_result', tool_use_id: tu.id, content: note ? ('Remembered (' + note.id + ').') : 'Nothing to remember.' });
+            results[idx] = { type: 'tool_result', tool_use_id: tu.id, content: note ? ('Remembered (' + note.id + ').') : 'Nothing to remember.' };
           } else if (tu.name === 'forget') {
             const ok = deleteNote(inp.id);
-            results.push({ type: 'tool_result', tool_use_id: tu.id, content: ok ? 'Forgotten.' : 'No memory with that id.' });
+            results[idx] = { type: 'tool_result', tool_use_id: tu.id, content: ok ? 'Forgotten.' : 'No memory with that id.' };
           } else if (tu.name === 'delegate' && SUBAGENTS[inp.agent]) {
             const agentId = inp.agent;
             emit('route', { agentId, task: inp.task || '', reason: inp.reason || '' });
             emit('agent', { agentId, state: 'assigned' });
-            let out = '';
-            try { out = await runSubAgent(agentId, inp.task || String(text), emit); }
-            catch (e) { out = '(failed: ' + ((e && e.message) || e) + ')'; emit('agent', { agentId, state: 'idle' }); }
-            results.push({ type: 'tool_result', tool_use_id: tu.id, content: out });
+            // Run specialists concurrently — big speedup when several are delegated at once.
+            jobs.push((async () => {
+              try { results[idx] = { type: 'tool_result', tool_use_id: tu.id, content: await runSubAgent(agentId, inp.task || String(text), emit) }; }
+              catch (e) { results[idx] = { type: 'tool_result', tool_use_id: tu.id, content: '(failed: ' + ((e && e.message) || e) + ')' }; emit('agent', { agentId, state: 'idle' }); }
+            })());
           } else {
-            results.push({ type: 'tool_result', tool_use_id: tu.id, content: 'Unknown tool.', is_error: true });
+            results[idx] = { type: 'tool_result', tool_use_id: tu.id, content: 'Unknown tool.', is_error: true };
           }
-        }
+        });
+        await Promise.all(jobs);
         messages.push({ role: 'user', content: results });
         emit('manager', { state: 'thinking' });
         continue;

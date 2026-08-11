@@ -84,7 +84,7 @@
         (front, +y, walkable), and a role work-spot to walk to.
      ========================================================== */
   var AGENTS = {
-    manager:   { name: 'Nova',  role: 'Director',  accent: ACCENTS.manager,   prop: 'none',
+    manager:   { name: 'Agent Sea',  role: 'Director',  accent: ACCENTS.manager,   prop: 'none',
                  desk: [20, 9],  chair: [20, 8],  stand: [20, 10], z: 0.30, work: [19, 2] },
     research:  { name: 'Scout', role: 'research',  accent: ACCENTS.research,  prop: 'magnifier',
                  desk: [13, 12], chair: [13, 11], stand: [13, 13], z: 0, work: [2, 15] },
