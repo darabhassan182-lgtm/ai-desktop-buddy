@@ -99,17 +99,43 @@ const SEND_EMAIL_TOOL = {
 const DIRECTOR_TOOLS = [DELEGATE_TOOL, REMEMBER_TOOL, FORGET_TOOL, SHOW_TOOL, SEND_EMAIL_TOOL];
 
 // --- Gmail sending (SMTP + App Password via nodemailer) ---------------------
-function gmailConfig() { const c = loadConfig(); return { user: c.gmailUser || '', pass: c.gmailAppPass || '' }; }
+function gmailConfig() {
+  const c = loadConfig();
+  const oauth = (c.gmailOAuth && c.gmailOAuth.refreshToken) ? c.gmailOAuth : null;
+  return { user: c.gmailUser || (oauth && oauth.user) || '', pass: c.gmailAppPass || '', oauth };
+}
+async function gmailAccessToken(o) {
+  const res = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ client_id: o.clientId, client_secret: o.clientSecret, refresh_token: o.refreshToken, grant_type: 'refresh_token' }),
+  });
+  if (!res.ok) throw new Error('Token refresh failed (HTTP ' + res.status + ') ' + (await res.text().catch(() => '')).slice(0, 120));
+  const d = await res.json();
+  if (!d.access_token) throw new Error('No access token from Google');
+  return d.access_token;
+}
 async function sendGmail(to, subject, body) {
   const g = gmailConfig();
-  if (!g.user || !g.pass) throw new Error('Gmail not connected');
-  const transporter = nodemailer.createTransport({
-    host: 'smtp.gmail.com', port: 465, secure: true,
-    auth: { user: g.user, pass: g.pass.replace(/\s+/g, '') },
-  });
-  const info = await transporter.sendMail({
-    from: g.user, to: String(to || ''), subject: String(subject || '(no subject)'), text: String(body || ''),
-  });
+  if (!g.user || (!g.oauth && !g.pass)) throw new Error('Gmail not connected');
+  if (g.oauth) {
+    // OAuth path → Gmail send API (uses only the gmail.send scope).
+    const token = await gmailAccessToken(g.oauth);
+    const mime = [
+      'From: ' + g.user, 'To: ' + String(to || ''), 'Subject: ' + String(subject || '(no subject)'),
+      'MIME-Version: 1.0', 'Content-Type: text/plain; charset="UTF-8"', '', String(body || ''),
+    ].join('\r\n');
+    const raw = Buffer.from(mime).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    const res = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
+      method: 'POST', headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ raw }),
+    });
+    if (!res.ok) throw new Error('Gmail API HTTP ' + res.status + ' ' + (await res.text().catch(() => '')).slice(0, 160));
+    const d = await res.json();
+    return d.id || 'sent';
+  }
+  // App Password fallback → SMTP.
+  const transporter = nodemailer.createTransport({ host: 'smtp.gmail.com', port: 465, secure: true, auth: { user: g.user, pass: g.pass.replace(/\s+/g, '') } });
+  const info = await transporter.sendMail({ from: g.user, to: String(to || ''), subject: String(subject || '(no subject)'), text: String(body || '') });
   return (info && info.messageId) ? info.messageId : 'sent';
 }
 
@@ -333,7 +359,7 @@ ipcMain.handle('key:save', (_e, key) => {
 ipcMain.handle('app:contentVersion', () => readManifest(activeContentDir()).version);
 
 // --- Gmail connect IPC ------------------------------------------------------
-ipcMain.handle('gmail:get', () => { const g = gmailConfig(); return { connected: !!(g.user && g.pass), user: g.user }; });
+ipcMain.handle('gmail:get', () => { const g = gmailConfig(); return { connected: !!(g.oauth || (g.user && g.pass)), user: g.user, method: g.oauth ? 'oauth' : (g.pass ? 'app-password' : 'none') }; });
 ipcMain.handle('gmail:set', (_e, user, pass) => {
   const c = loadConfig();
   const u = String(user || '').trim();
@@ -345,7 +371,7 @@ ipcMain.handle('gmail:set', (_e, user, pass) => {
 });
 ipcMain.handle('gmail:test', async () => {
   const g = gmailConfig();
-  if (!g.user || !g.pass) return { ok: false, error: 'Not connected.' };
+  if (!g.user || (!g.oauth && !g.pass)) return { ok: false, error: 'Not connected.' };
   try { const id = await sendGmail(g.user, 'Nexus test ✓', 'This is a test from Agent Sea — email sending works.'); return { ok: true, id }; }
   catch (e) { return { ok: false, error: (e && e.message) || String(e) }; }
 });
