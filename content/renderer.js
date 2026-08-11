@@ -246,6 +246,15 @@
     var text = (rawText == null ? '' : String(rawText)).trim();
     if (!text) return;
 
+    // "morning briefing" / "brief me" → run the urgent-email briefing on demand.
+    if (/^\s*(morning briefing|brief me|my briefing|daily briefing|urgent emails?)\b/i.test(text)) {
+      var cmdEl = $('command'); if (cmdEl) cmdEl.value = '';
+      showSubtitle(text);
+      try { nxCall('stopSpeaking'); } catch (_) {}
+      if (nx && typeof nx.briefing === 'function') nxCall('briefing').catch(function () {});
+      return;
+    }
+
     // Stop any prior speech and clear the previous answer for a fresh reveal.
     try { nxCall('stopSpeaking'); } catch (_) {}
     if (speakTimer) { clearTimeout(speakTimer); speakTimer = null; }
