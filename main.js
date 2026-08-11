@@ -34,6 +34,8 @@ const DIRECTOR_SYSTEM = `You are Agent Sea, the Director of an AI studio. You ha
 - inbox (Echo): drafting Slack messages and email replies
 - api (Wire): API calls and automation tasks
 You also have a long-term MEMORY. Use the \`remember\` tool whenever the user shares durable information (their name, company, preferences, a repeatable process/workflow) so you can act faster next time; use \`forget\` to remove an outdated item by id. Never re-ask for something already in MEMORY, and never ask for a stored credential's value.
+LEARN AND ADAPT to the user over time: notice their habits, routines, favourite apps/sites/music, the people they contact, and how they like things done — and proactively \`remember\` them (e.g. "morning routine = open Chrome + Gmail", "favourite focus music = lo-fi beats on YouTube", "usually emails Areeba about design"). When you spot a repeated pattern, save it and use it so a short command triggers the whole thing next time. Prefer acting on remembered shortcuts over re-asking.
+You can OPEN things on the user's Mac with the \`control\` tool — launch apps (Chrome, Netflix, Spotify…) and open URLs in Chrome (websites, a YouTube search to play a song/video, etc.). When the user says open/play/put on/go to something, just do it with \`control\`; you don't need permission to open apps or websites.
 You control the user's HOLOGRAPHIC DISPLAY with the \`show\` tool. Be visual, like Jarvis: whenever a place, city, country, or landmark comes up, call \`show\` with kind 'map' and that place so the map flies to it on screen; when a short summary, list, or set of facts would help, call \`show\` with kind 'info'. Do this proactively and in ADDITION to speaking.
 You can READ and SEARCH the user's Gmail with \`gmail_search\` (find an address, look up or check emails — returns senders/subjects/snippets + ids) and \`gmail_read\` (full body of one message by id, for summarizing). Use these to actually look things up instead of saying you can't.
 You can use SLACK when connected: \`slack_search\` to find/read messages, and \`slack_send\` to post a message (channel can be #channel or @person). Confirm before sending a Slack message, same as email. If a Slack action fails because it isn't connected, tell them to click the 💬 button to connect Slack.
@@ -118,7 +120,22 @@ const SLACK_SEARCH_TOOL = {
   description: "Search the user's Slack messages (needs a Slack user token). Returns matching messages with who/where/text. Use to find a message, catch up, or look something up.",
   input_schema: { type: 'object', properties: { query: { type: 'string' }, count: { type: 'number', description: '1–20, default 10' } }, required: ['query'] },
 };
-const DIRECTOR_TOOLS = [DELEGATE_TOOL, REMEMBER_TOOL, FORGET_TOOL, SHOW_TOOL, SEND_EMAIL_TOOL, GMAIL_SEARCH_TOOL, GMAIL_READ_TOOL, SLACK_SEND_TOOL, SLACK_SEARCH_TOOL];
+const CONTROL_TOOL = {
+  name: 'control',
+  description: "Open things on the user's Mac. action 'open_app' launches a Mac app by name (e.g. 'Google Chrome', 'Netflix', 'Spotify', 'Notes', 'Mail'). action 'open_url' opens a web address IN CHROME — build the exact URL yourself: to play music/video use a YouTube search URL like https://www.youtube.com/results?search_query=SONG+NAME (or a direct link), open Netflix at https://www.netflix.com, or any site. Use this whenever the user says open / play / go to / put on something. You may call it more than once (e.g. open the app AND a URL).",
+  input_schema: { type: 'object', properties: { action: { type: 'string', enum: ['open_url', 'open_app'] }, target: { type: 'string', description: 'A full URL (open_url) or a Mac app name (open_app).' } }, required: ['action', 'target'] },
+};
+const DIRECTOR_TOOLS = [DELEGATE_TOOL, REMEMBER_TOOL, FORGET_TOOL, SHOW_TOOL, SEND_EMAIL_TOOL, GMAIL_SEARCH_TOOL, GMAIL_READ_TOOL, SLACK_SEND_TOOL, SLACK_SEARCH_TOOL, CONTROL_TOOL];
+
+// --- Mac control: open apps + URLs (in Chrome) ------------------------------
+function macControl(action, target) {
+  const t = String(target || '').trim();
+  if (!t) throw new Error('nothing to open');
+  if (action === 'open_app') { execFile('open', ['-a', t], () => {}); return 'Opening ' + t + '.'; }
+  let url = t; if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(url)) url = 'https://' + url;   // default to https
+  execFile('open', ['-a', 'Google Chrome', url], (err) => { if (err) execFile('open', [url], () => {}); });  // Chrome, else default browser
+  return 'Opening ' + url + '.';
+}
 
 // --- Slack (Web API via a user/bot token) -----------------------------------
 function slackToken() { return loadConfig().slackToken || ''; }
@@ -840,6 +857,12 @@ ipcMain.handle('orch:ask', async (event, text) => {
               zoom: (typeof inp.zoom === 'number' && isFinite(inp.zoom)) ? Math.max(2, Math.min(18, inp.zoom)) : null,
             });
             results[idx] = { type: 'tool_result', tool_use_id: tu.id, content: 'Displayed on the holographic HUD.' };
+          } else if (tu.name === 'control') {
+            try {
+              const r = macControl(inp.action, inp.target);
+              emit('notice', { text: r });
+              results[idx] = { type: 'tool_result', tool_use_id: tu.id, content: r };
+            } catch (e) { results[idx] = { type: 'tool_result', tool_use_id: tu.id, content: 'Could not open that: ' + ((e && e.message) || e), is_error: true }; }
           } else if (tu.name === 'slack_search') {
             emit('agent', { agentId: 'inbox', state: 'searching' });
             jobs.push((async () => {
