@@ -142,10 +142,13 @@ function slackToken() { return loadConfig().slackToken || ''; }
 async function slackCall(method, params) {
   const token = slackToken();
   if (!token) throw new Error('Slack not connected');
+  const body = new URLSearchParams();
+  const p = params || {};
+  for (const k in p) { if (p[k] != null) body.append(k, typeof p[k] === 'object' ? JSON.stringify(p[k]) : String(p[k])); }
   const res = await fetch('https://slack.com/api/' + method, {
     method: 'POST',
-    headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json; charset=utf-8' },
-    body: JSON.stringify(params || {}),
+    headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/x-www-form-urlencoded; charset=utf-8' },
+    body,
   });
   const d = await res.json().catch(() => ({ ok: false, error: 'bad-response' }));
   if (!d.ok) throw new Error('Slack ' + method + ': ' + (d.error || 'failed'));
