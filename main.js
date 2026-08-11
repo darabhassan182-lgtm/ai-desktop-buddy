@@ -35,6 +35,7 @@ const DIRECTOR_SYSTEM = `You are Agent Sea, the Director of an AI studio. You ha
 - api (Wire): API calls and automation tasks
 You also have a long-term MEMORY. Use the \`remember\` tool whenever the user shares durable information (their name, company, preferences, a repeatable process/workflow) so you can act faster next time; use \`forget\` to remove an outdated item by id. Never re-ask for something already in MEMORY, and never ask for a stored credential's value.
 You control the user's HOLOGRAPHIC DISPLAY with the \`show\` tool. Be visual, like Jarvis: whenever a place, city, country, or landmark comes up, call \`show\` with kind 'map' and that place so the map flies to it on screen; when a short summary, list, or set of facts would help, call \`show\` with kind 'info'. Do this proactively and in ADDITION to speaking.
+You can READ and SEARCH the user's Gmail with \`gmail_search\` (find an address, look up or check emails — returns senders/subjects/snippets + ids) and \`gmail_read\` (full body of one message by id, for summarizing). Use these to actually look things up instead of saying you can't.
 You can SEND EMAIL from the user's connected Gmail with the \`send_email\` tool. Workflow: draft the email (delegate to Echo if helpful), then READ BACK the recipient, subject, and a short summary of the body and ask "shall I send it?"; only after the user clearly confirms, call \`send_email\`. Never send without that confirmation. If sending fails because Gmail isn't connected, tell them to click the 📧 button to connect Gmail.
 You are calm, refined, and efficient — like Jarvis from Iron Man. For each request, delegate to the right specialist(s) when needed (you may delegate more than once); for simple things, answer directly. Reply with a VERY brief spoken answer — ideally one sentence, at most two — natural and composed, no markdown, no bullet points, no URLs (it is read aloud). Address the user directly.`;
 
@@ -96,7 +97,17 @@ const SEND_EMAIL_TOOL = {
     required: ['to', 'subject', 'body'],
   },
 };
-const DIRECTOR_TOOLS = [DELEGATE_TOOL, REMEMBER_TOOL, FORGET_TOOL, SHOW_TOOL, SEND_EMAIL_TOOL];
+const GMAIL_SEARCH_TOOL = {
+  name: 'gmail_search',
+  description: "Search the user's Gmail and return matching messages (id, from, to, subject, date, snippet). Use it to find someone's email address, look up past emails, or check the inbox. `query` is a Gmail search string (names, keywords, from:x, subject:x, is:unread, newer_than:7d, etc.).",
+  input_schema: { type: 'object', properties: { query: { type: 'string' }, max: { type: 'number', description: '1–15, default 8' } }, required: ['query'] },
+};
+const GMAIL_READ_TOOL = {
+  name: 'gmail_read',
+  description: "Read the FULL body of one Gmail message by its id (ids come from gmail_search). Use to summarize or answer questions about a specific email.",
+  input_schema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
+};
+const DIRECTOR_TOOLS = [DELEGATE_TOOL, REMEMBER_TOOL, FORGET_TOOL, SHOW_TOOL, SEND_EMAIL_TOOL, GMAIL_SEARCH_TOOL, GMAIL_READ_TOOL];
 
 // --- Gmail sending (SMTP + App Password via nodemailer) ---------------------
 function gmailConfig() {
@@ -137,6 +148,44 @@ async function sendGmail(to, subject, body) {
   const transporter = nodemailer.createTransport({ host: 'smtp.gmail.com', port: 465, secure: true, auth: { user: g.user, pass: g.pass.replace(/\s+/g, '') } });
   const info = await transporter.sendMail({ from: g.user, to: String(to || ''), subject: String(subject || '(no subject)'), text: String(body || '') });
   return (info && info.messageId) ? info.messageId : 'sent';
+}
+
+// Read side — search the inbox + fetch a full message (needs the OAuth connection).
+function decodeB64Url(s) { try { return Buffer.from(String(s || '').replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8'); } catch (_) { return ''; } }
+function headerMap(payload) { const h = {}; ((payload && payload.headers) || []).forEach((x) => { h[x.name.toLowerCase()] = x.value; }); return h; }
+async function gmailSearch(query, max) {
+  const g = gmailConfig();
+  if (!g.oauth) throw new Error('Reading the inbox needs the Gmail OAuth connection (reconnect via 📧).');
+  const token = await gmailAccessToken(g.oauth);
+  const n = Math.max(1, Math.min(15, max || 8));
+  const listRes = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=' + n + '&q=' + encodeURIComponent(String(query || '')), { headers: { Authorization: 'Bearer ' + token } });
+  if (!listRes.ok) throw new Error('Gmail list HTTP ' + listRes.status + ' ' + (await listRes.text().catch(() => '')).slice(0, 120));
+  const ids = ((await listRes.json()).messages || []).slice(0, n).map((m) => m.id);
+  const out = [];
+  for (const id of ids) {
+    const mRes = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/' + id + '?format=metadata&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Subject&metadataHeaders=Date', { headers: { Authorization: 'Bearer ' + token } });
+    if (!mRes.ok) continue;
+    const m = await mRes.json(); const h = headerMap(m.payload);
+    out.push({ id, from: h.from || '', to: h.to || '', subject: h.subject || '(no subject)', date: h.date || '', snippet: m.snippet || '' });
+  }
+  return out;
+}
+async function gmailRead(id) {
+  const g = gmailConfig();
+  if (!g.oauth) throw new Error('Reading the inbox needs the Gmail OAuth connection.');
+  const token = await gmailAccessToken(g.oauth);
+  const mRes = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/' + encodeURIComponent(id) + '?format=full', { headers: { Authorization: 'Bearer ' + token } });
+  if (!mRes.ok) throw new Error('Gmail read HTTP ' + mRes.status);
+  const m = await mRes.json(); const h = headerMap(m.payload);
+  // Pull the plain-text body from the MIME tree.
+  let text = '';
+  (function walk(p) {
+    if (!p) return;
+    if (p.mimeType === 'text/plain' && p.body && p.body.data) { text += decodeB64Url(p.body.data); }
+    else if (p.parts) p.parts.forEach(walk);
+  })(m.payload);
+  if (!text && m.payload && m.payload.body && m.payload.body.data) text = decodeB64Url(m.payload.body.data);
+  return { from: h.from || '', to: h.to || '', subject: h.subject || '', date: h.date || '', body: (text || m.snippet || '').slice(0, 6000) };
 }
 
 // --- Config / API key -------------------------------------------------------
@@ -674,6 +723,33 @@ ipcMain.handle('orch:ask', async (event, text) => {
               zoom: (typeof inp.zoom === 'number' && isFinite(inp.zoom)) ? Math.max(2, Math.min(18, inp.zoom)) : null,
             });
             results[idx] = { type: 'tool_result', tool_use_id: tu.id, content: 'Displayed on the holographic HUD.' };
+          } else if (tu.name === 'gmail_search') {
+            emit('agent', { agentId: 'inbox', state: 'searching' });
+            jobs.push((async () => {
+              try {
+                const found = await gmailSearch(inp.query, inp.max);
+                emit('agent', { agentId: 'inbox', state: 'done' });
+                const txt = found.length
+                  ? found.map((m, i) => (i + 1) + '. id=' + m.id + ' | From: ' + m.from + ' | To: ' + m.to + ' | Subject: ' + m.subject + ' | ' + m.date + '\n   ' + m.snippet).join('\n')
+                  : 'No matching emails found.';
+                results[idx] = { type: 'tool_result', tool_use_id: tu.id, content: txt };
+              } catch (e) {
+                emit('agent', { agentId: 'inbox', state: 'idle' });
+                results[idx] = { type: 'tool_result', tool_use_id: tu.id, content: 'Search failed: ' + ((e && e.message) || e), is_error: true };
+              }
+            })());
+          } else if (tu.name === 'gmail_read') {
+            emit('agent', { agentId: 'inbox', state: 'working' });
+            jobs.push((async () => {
+              try {
+                const m = await gmailRead(inp.id);
+                emit('agent', { agentId: 'inbox', state: 'done' });
+                results[idx] = { type: 'tool_result', tool_use_id: tu.id, content: 'From: ' + m.from + '\nTo: ' + m.to + '\nDate: ' + m.date + '\nSubject: ' + m.subject + '\n\n' + m.body };
+              } catch (e) {
+                emit('agent', { agentId: 'inbox', state: 'idle' });
+                results[idx] = { type: 'tool_result', tool_use_id: tu.id, content: 'Read failed: ' + ((e && e.message) || e), is_error: true };
+              }
+            })());
           } else if (tu.name === 'send_email') {
             emit('agent', { agentId: 'inbox', state: 'working' });
             jobs.push((async () => {
