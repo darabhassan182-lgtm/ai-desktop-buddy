@@ -4,8 +4,10 @@
    (WebGL via Three.js r0.185). Dark, premium, stylized low-poly
    office complex: closed offices + corridors around a central
    Director atrium, dynamic lighting + soft shadows + UnrealBloom
-   + ACES tone mapping + fog, low-poly "bean" characters that WALK
-   between rooms through doorways, an orbit/pan/zoom camera with a
+   + ACES tone mapping + fog, articulated low-poly HUMANOID characters
+   (a real rig of Group joints) that WALK with a proper gait cycle,
+   stay confined to their own office (leaving only to hand a result to
+   the Director in the atrium), an orbit/pan/zoom camera with a
    focus(id) dolly tween, and calm ambient life.
 
    Three.js is a global bundle loaded BEFORE this classic <script>.
@@ -81,7 +83,7 @@
      ========================================================== */
   var WALL_H = 3.2;
   var HALF_X = 4.5, HALF_Z = 4.0;      // room interior half-extents
-  var STEP_FREQ = 6.5;                 // gait cadence
+  var STEP_FREQ = 2.4;                 // gait phase advance per world-unit (tuned so feet ~plant, minimal slide)
   var MAX_AMBIENT = 2;                 // keep the tower calm
   var DELIVER_MAX = 60;                // world-units cap for walking a hand-off
   var ORB_DUR = 0.6;                   // orb travel seconds
@@ -94,7 +96,8 @@
     wallExt: '#1b1f28', wallInt: '#282e38', ceiling: '#151922', base: '#0c0f15',
     glass: '#8fb0d8', desk: '#1b1f27', chair: '#171a21', monitor: '#0a0b0e',
     prop: '#2a303b', pot: '#14171d', leaf: '#243029', leafLit: '#31463a',
-    pool: '#cdd8ec', warm: '#e0a040', neutral: '#cdd8ec'
+    pool: '#cdd8ec', warm: '#e0a040', neutral: '#cdd8ec',
+    suit: '#2c333f', face: '#3a4250'
   };
 
   /* ==========================================================
@@ -150,7 +153,13 @@
     docs_door: [-9.5, 11], docs_home: [-11, 8.5], docs_desk: [-14, 13], docs_work: [-17.5, 13],
     inbox_door: [9.5, -11], inbox_home: [11, -8.5], inbox_desk: [14, -13], inbox_work: [17.5, -13],
     marketing_door: [9.5, 11], marketing_home: [11, 8.5], marketing_desk: [14, 13], marketing_work: [17.5, 13],
-    api_door: [0, 12], api_home: [0, 13], api_desk: [0, 18], api_work: [0, 20]
+    api_door: [0, 12], api_home: [0, 13], api_desk: [0, 18], api_work: [0, 20],
+    // in-office wander anchors — kept clear of the desk/fixture so ambient pacing never leaves the room
+    research_roamA: [-16, -9], research_roamB: [-12.5, -8],
+    docs_roamA: [-16, 9], docs_roamB: [-12.5, 8],
+    inbox_roamA: [16, -9], inbox_roamB: [12.5, -8],
+    marketing_roamA: [16, 9], marketing_roamB: [12.5, 8],
+    api_roamA: [-2.5, 14], api_roamB: [2.5, 14]
   };
   var EDGES = [
     ['HUB', 'elbowNW'], ['HUB', 'elbowSW'], ['HUB', 'elbowNE'], ['HUB', 'elbowSE'],
@@ -160,7 +169,13 @@
     ['elbowSW', 'docs_door'], ['docs_door', 'docs_home'], ['docs_home', 'docs_desk'], ['docs_desk', 'docs_work'],
     ['elbowNE', 'inbox_door'], ['inbox_door', 'inbox_home'], ['inbox_home', 'inbox_desk'], ['inbox_desk', 'inbox_work'],
     ['elbowSE', 'marketing_door'], ['marketing_door', 'marketing_home'], ['marketing_home', 'marketing_desk'], ['marketing_desk', 'marketing_work'],
-    ['api_door', 'api_home'], ['api_home', 'api_desk'], ['api_desk', 'api_work']
+    ['api_door', 'api_home'], ['api_home', 'api_desk'], ['api_desk', 'api_work'],
+    // in-office roam loops (home <-> roamA <-> roamB) — every edge stays inside the room
+    ['research_home', 'research_roamA'], ['research_home', 'research_roamB'], ['research_roamA', 'research_roamB'],
+    ['docs_home', 'docs_roamA'], ['docs_home', 'docs_roamB'], ['docs_roamA', 'docs_roamB'],
+    ['inbox_home', 'inbox_roamA'], ['inbox_home', 'inbox_roamB'], ['inbox_roamA', 'inbox_roamB'],
+    ['marketing_home', 'marketing_roamA'], ['marketing_home', 'marketing_roamB'], ['marketing_roamA', 'marketing_roamB'],
+    ['api_home', 'api_roamA'], ['api_home', 'api_roamB'], ['api_roamA', 'api_roamB']
   ];
   var NODE_NAMES = [];
   var ADJ = {};
@@ -237,11 +252,22 @@
      6. ASSET BUILD (geometries + materials)  — once
      ========================================================== */
   function buildAssets() {
-    GEO.body = new THREE.CapsuleGeometry(0.32, 0.7, 6, 12);
-    GEO.head = new THREE.SphereGeometry(0.26, 16, 12);
-    GEO.visor = new THREE.BoxGeometry(0.34, 0.12, 0.06);
-    GEO.rim = new THREE.TorusGeometry(0.3, 0.03, 8, 20);
-    GEO.foot = new THREE.BoxGeometry(0.14, 0.1, 0.22);
+    // --- shared humanoid rig geometry (ONE set, reused by every agent for performance) ---
+    GEO.hips = new THREE.BoxGeometry(0.30, 0.20, 0.22);
+    GEO.belt = new THREE.BoxGeometry(0.33, 0.07, 0.24);
+    GEO.torso = new THREE.CapsuleGeometry(0.165, 0.30, 5, 12);
+    GEO.neck = new THREE.CylinderGeometry(0.06, 0.07, 0.12, 8);
+    GEO.head = new THREE.SphereGeometry(0.16, 16, 12);
+    GEO.visor = new THREE.BoxGeometry(0.20, 0.055, 0.06);
+    GEO.eye = new THREE.SphereGeometry(0.032, 8, 8);
+    GEO.shoulder = new THREE.SphereGeometry(0.085, 10, 8);
+    GEO.upperArm = new THREE.CapsuleGeometry(0.055, 0.19, 4, 8);
+    GEO.foreArm = new THREE.CapsuleGeometry(0.05, 0.18, 4, 8);
+    GEO.hand = new THREE.SphereGeometry(0.06, 10, 8);
+    GEO.thigh = new THREE.CapsuleGeometry(0.085, 0.27, 5, 10);
+    GEO.shin = new THREE.CapsuleGeometry(0.07, 0.28, 5, 10);
+    GEO.foot = new THREE.BoxGeometry(0.12, 0.09, 0.24);
+    GEO.rim = new THREE.TorusGeometry(0.135, 0.02, 8, 20);
     GEO.searchOrb = new THREE.SphereGeometry(0.07, 10, 8);
     GEO.orb = new THREE.SphereGeometry(0.14, 12, 10);
     GEO.ring = new THREE.TorusGeometry(1, 0.05, 8, 32);
@@ -265,6 +291,8 @@
     MAT.pot = new THREE.MeshStandardMaterial({ color: COL.pot, roughness: 0.9 });
     MAT.leaf = new THREE.MeshStandardMaterial({ color: COL.leaf, emissive: COL.leafLit, emissiveIntensity: 0.06, roughness: 0.85 });
     MAT.body = new THREE.MeshStandardMaterial({ color: '#20242d', roughness: 0.7, metalness: 0.05 });
+    MAT.head = new THREE.MeshStandardMaterial({ color: COL.face, roughness: 0.5, metalness: 0.15 });
+    MAT.eye = new THREE.MeshStandardMaterial({ color: '#0a0d14', emissive: '#e8f0ff', emissiveIntensity: 0.9, roughness: 0.3 });
     MAT.pool = new THREE.MeshStandardMaterial({ color: COL.pool, emissive: COL.pool, emissiveIntensity: 0.06, roughness: 1.0, transparent: true, opacity: 0.5, depthWrite: false });
     // per-accent orb materials (unlit + bloom)
     MAT.orb = {};
@@ -674,30 +702,92 @@
   }
 
   /* ==========================================================
-     11. PEOPLE  (shared bean build, per-accent tint)
+     11. PEOPLE  (shared humanoid rig, per-accent materials)
      ========================================================== */
+  // Suit colour = the neutral base pushed toward the agent accent, so each body
+  // still reads at a glance without going neon (the emissive rim/visor do the pop).
+  function accentSuit(accent) {
+    var c = new THREE.Color(COL.suit); c.lerp(new THREE.Color(accent), 0.5); return c;
+  }
+
+  // A stylized, low-poly humanoid built as a HIERARCHY of Group nodes so limbs
+  // articulate:  rig -> pelvis -> torso -> {neck -> head}, torso -> arms,
+  //              pelvis -> legs.  Geometry is shared (GEO.*); only a handful of
+  //              per-accent materials are created per character.
   function makePerson(id) {
     var A = AGENTS[id], accent = A.accent, isMgr = id === 'manager';
     var group = new THREE.Group();
     var rig = new THREE.Group(); group.add(rig);
 
-    var body = new THREE.Mesh(GEO.body, MAT.body); body.position.y = 0.75; body.castShadow = true; rig.add(body);
-    var head = new THREE.Mesh(GEO.head, MAT.body); head.position.y = 1.5; head.castShadow = true; rig.add(head);
-
+    var suitMat  = new THREE.MeshStandardMaterial({ color: accentSuit(accent), roughness: 0.6, metalness: 0.12 });
+    var trimMat  = new THREE.MeshStandardMaterial({ color: accent, emissive: accent, emissiveIntensity: 0.18, roughness: 0.42, metalness: 0.3 });
+    var rimMat   = new THREE.MeshStandardMaterial({ color: accent, emissive: accent, emissiveIntensity: 0.35, roughness: 0.5, metalness: 0.2 });
     var visorMat = new THREE.MeshStandardMaterial({ color: accent, emissive: accent, emissiveIntensity: isMgr ? 0.8 : 0.6, roughness: 0.4, metalness: 0.2 });
-    var visor = new THREE.Mesh(GEO.visor, visorMat); visor.position.set(0, 1.52, 0.22); rig.add(visor);
 
-    var rimMat = new THREE.MeshStandardMaterial({ color: accent, emissive: accent, emissiveIntensity: 0.35, roughness: 0.5, metalness: 0.2 });
-    var rim = new THREE.Mesh(GEO.rim, rimMat); rim.position.y = 1.05; rim.rotation.x = Math.PI / 2; rig.add(rim);
+    function part(geo, mat, x, y, z, cast) {
+      var m = new THREE.Mesh(geo, mat); m.position.set(x || 0, y || 0, z || 0);
+      m.castShadow = (cast !== false); m.receiveShadow = true; return m;
+    }
 
-    var footL = new THREE.Mesh(GEO.foot, MAT.body); footL.position.set(-0.14, 0.06, 0.02); footL.castShadow = true; rig.add(footL);
-    var footR = new THREE.Mesh(GEO.foot, MAT.body); footR.position.set(0.14, 0.06, 0.02); footR.castShadow = true; rig.add(footR);
+    // ----- pelvis (skeleton root) -----
+    var pelvis = new THREE.Group(); pelvis.position.y = 0.95; rig.add(pelvis);
+    pelvis.add(part(GEO.hips, suitMat, 0, 0, 0));
+    pelvis.add(part(GEO.belt, trimMat, 0, 0.02, 0));
 
+    // ----- torso -----
+    var torso = new THREE.Group(); pelvis.add(torso);
+    torso.add(part(GEO.torso, suitMat, 0, 0.24, 0));
+    var rim = new THREE.Mesh(GEO.rim, rimMat); rim.position.set(0, 0.30, 0.12); rim.rotation.x = Math.PI / 2; torso.add(rim);
+
+    // ----- neck + head (with a friendly two-eye face + accent brow) -----
+    var neck = new THREE.Group(); neck.position.y = 0.52; torso.add(neck);
+    neck.add(part(GEO.neck, suitMat, 0, 0.03, 0, false));
+    var head = new THREE.Group(); head.position.y = 0.12; neck.add(head);
+    head.add(part(GEO.head, MAT.head, 0, 0.05, 0));
+    var visor = new THREE.Mesh(GEO.visor, visorMat); visor.position.set(0, 0.075, 0.15); head.add(visor);
+    var eyeL = new THREE.Mesh(GEO.eye, MAT.eye); eyeL.position.set(-0.06, 0.01, 0.155); head.add(eyeL);
+    var eyeR = new THREE.Mesh(GEO.eye, MAT.eye); eyeR.position.set(0.06, 0.01, 0.155); head.add(eyeR);
+
+    // ----- arms (shoulder -> upperArm -> foreArm -> hand) -----
+    function arm(sx) {
+      var shoulder = new THREE.Group(); shoulder.position.set(sx, 0.46, 0); torso.add(shoulder);
+      shoulder.add(part(GEO.shoulder, trimMat, 0, 0, 0));
+      var upper = new THREE.Group(); shoulder.add(upper);
+      upper.add(part(GEO.upperArm, suitMat, 0, -0.15, 0));
+      var fore = new THREE.Group(); fore.position.y = -0.30; upper.add(fore);
+      fore.add(part(GEO.foreArm, suitMat, 0, -0.14, 0));
+      var hand = new THREE.Group(); hand.position.y = -0.28; fore.add(hand);
+      hand.add(part(GEO.hand, trimMat, 0, -0.02, 0));
+      return { shoulder: shoulder, upper: upper, fore: fore, hand: hand };
+    }
+    var armL = arm(0.19), armR = arm(-0.19);
+
+    // ----- legs (hip -> thigh -> shin -> foot) -----
+    function leg(hx) {
+      var hip = new THREE.Group(); hip.position.set(hx, 0, 0); pelvis.add(hip);
+      var thigh = new THREE.Group(); hip.add(thigh);
+      thigh.add(part(GEO.thigh, suitMat, 0, -0.22, 0));
+      var shin = new THREE.Group(); shin.position.y = -0.44; thigh.add(shin);
+      shin.add(part(GEO.shin, suitMat, 0, -0.21, 0));
+      var foot = new THREE.Group(); foot.position.y = -0.42; shin.add(foot);
+      foot.add(part(GEO.foot, trimMat, 0, -0.045, 0.06));
+      return { hip: hip, thigh: thigh, shin: shin, foot: foot };
+    }
+    var legL = leg(0.10), legR = leg(-0.10);
+
+    // ----- "searching" indicator (kept from the old build) -----
     var searchMat = new THREE.MeshBasicMaterial({ color: accent });
-    var searchOrb = new THREE.Mesh(GEO.searchOrb, searchMat); searchOrb.position.set(0, 1.75, 0.45); searchOrb.visible = false; rig.add(searchOrb);
+    var searchOrb = new THREE.Mesh(GEO.searchOrb, searchMat); searchOrb.position.set(0, 1.9, 0.42); searchOrb.visible = false; rig.add(searchOrb);
 
     if (isMgr) group.scale.setScalar(1.12);
-    group.userData = { rig: rig, body: body, head: head, visor: visor, visorMat: visorMat, rim: rim, rimMat: rimMat, footL: footL, footR: footR, searchOrb: searchOrb };
+    // store every articulating group ref so the walk + idle animations can rotate them
+    group.userData = {
+      rig: rig, pelvis: pelvis, torso: torso, neck: neck, head: head,
+      visor: visor, visorMat: visorMat, rim: rim, rimMat: rimMat,
+      eyeL: eyeL, eyeR: eyeR,
+      armL: armL, armR: armR, legL: legL, legR: legR,
+      searchOrb: searchOrb
+    };
     return group;
   }
 
@@ -708,7 +798,10 @@
       pop: spring(1, 190, 16), bounce: spring(0, 220, 12),
       breath: Math.random() * 6.28, work: Math.random() * 6.28, orbitAngle: Math.random() * 6.28,
       speaking: false, mouthPh: 0, doneT: -1, hash: Math.random() * 10,
-      lastDeliver: -1, walkDeliver: false
+      lastDeliver: -1, walkDeliver: false,
+      // idle-life state: blink + head look-around
+      blink: 0, blinkT: 1 + Math.random() * 3,
+      lookT: Math.random() * 3, lookYawT: 0, lookPitchT: 0
     };
   }
   function makeMV(id) {
@@ -818,12 +911,18 @@
     }
     return n;
   }
+  // Ambient wander destinations are restricted to the agent's OWN office anchors
+  // (home + two in-room roam points). These never touch corridors or other rooms,
+  // so specialists get calm in-office life without ever leaving. Agent Sea presides
+  // in the atrium and never roams.
   function pickAmbientPOI(id) {
-    var opts = ['coffee', 'HUB'];
-    var others = SPECIALISTS.filter(function (o) { return o !== id; });
-    if (id === 'manager') others = SPECIALISTS.slice();
-    if (others.length) opts.push(others[(Math.random() * others.length) | 0] + '_home');
-    return opts[(Math.random() * opts.length) | 0];
+    if (id === 'manager') return null;
+    var cur = nearestNode(MV[id].pos.x, MV[id].pos.z);
+    var opts = [id + '_home', id + '_roamA', id + '_roamB'];
+    var pick = [];
+    for (var i = 0; i < opts.length; i++) { if (opts[i] !== cur) pick.push(opts[i]); }
+    if (!pick.length) pick = opts;
+    return pick[(Math.random() * pick.length) | 0];
   }
 
   function updateBehavior(id, dt) {
@@ -841,13 +940,12 @@
     }
     if (rt.state === 'assigned' || rt.state === 'delivering') return; // hold at desk
     if (rt.state === 'idle' && atHome(id)) {
+      if (id === 'manager') return;                     // Agent Sea stays in the atrium (presides only)
       mv.ambientT -= dt;
       if (mv.ambientT <= 0) {
-        var base = (id === 'manager') ? 22 : 10;
-        mv.ambientT = base + Math.random() * 14;
-        if (id === 'manager' && Math.random() < 0.5) return; // Agent Sea mostly presides
+        mv.ambientT = 9 + Math.random() * 13;
         if (countAmbientWalkers() < MAX_AMBIENT) {
-          var poi = pickAmbientPOI(id);
+          var poi = pickAmbientPOI(id);                 // own-office anchor only
           if (poi) goToNode(id, poi, 'ambient');
         }
       }
@@ -1034,37 +1132,102 @@
     var baseY = 0;
     if (isMgr) { var onDais = Math.hypot(mv.pos.x, mv.pos.z) < 1.6; mv.daisY += ((onDais ? 0.3 : 0) - mv.daisY) * Math.min(1, dt * 8); baseY = mv.daisY; }
 
-    var moving = mv.moving;
-    var workPose = !moving && (rt.state === 'working' || rt.state === 'searching') && (mv.task === 'atwork' || mv.task === 'workstep');
-    var bob = 0, roll = 0, lean = 0, breathScale = 1, headBob = 0;
+    // ---------- articulated pose: real walk cycle / idle life / typing ----------
+    var moving = mv.moving && !reduced;
+    var workPose = !mv.moving && (rt.state === 'working' || rt.state === 'searching') && (mv.task === 'atwork' || mv.task === 'workstep');
+    var kJoint = Math.min(1, dt * 16), kBody = Math.min(1, dt * 12);
+    var bs = reduced ? 0 : Math.sin(rt.breath);
 
-    if (moving && !reduced) {
-      bob = Math.abs(Math.sin(mv.stepPhase)) * 0.06;
-      roll = Math.sin(mv.stepPhase) * 0.05;
-      lean = 0.05;
-      ud.footL.rotation.x = Math.sin(mv.stepPhase) * 0.6;
-      ud.footR.rotation.x = -Math.sin(mv.stepPhase) * 0.6;
+    // joint rotation targets — default to a relaxed idle stance
+    var tThL = 0, tThR = 0, tKnL = 0.06, tKnR = 0.06, tFtL = 0, tFtR = 0;
+    var tArL = 0.03, tArR = 0.03, tFoL = -0.18, tFoR = -0.18;
+    var tPelYaw = 0, tTorYaw = 0, tHeadYaw = 0, tHeadPitch = 0;
+    var bob = 0, roll = 0, lean = 0, breathX = 1, breathY = 1;
+
+    if (moving) {
+      // Gait phase advances with distance travelled (mv.stepPhase). Thighs swing
+      // fore/aft, knees bend on the swing, arms counter-swing, torso bobs at 2x,
+      // hips/shoulders counter-rotate, plus a small forward lean.
+      var phi = mv.stepPhase, sp = Math.sin(phi), cp = Math.cos(phi);
+      tThL = -0.52 * sp;  tThR = 0.52 * sp;                       // fore/aft leg swing
+      // Knee bends through the SWING (foot moving forward, cos(phi)>0) and stays
+      // straight through STANCE (foot planted, moving backward) -> feet don't slide.
+      tKnL = 0.14 + 0.95 * Math.max(0, cp);
+      tKnR = 0.14 + 0.95 * Math.max(0, -cp);
+      tFtL = clamp(-(tThL + tKnL) * 0.45, -0.45, 0.55);           // ankle keeps foot near flat/ground
+      tFtR = clamp(-(tThR + tKnR) * 0.45, -0.45, 0.55);
+      tArL = 0.42 * sp;   tArR = -0.42 * sp;                      // arms counter-swing (contralateral)
+      tFoL = -0.28 - 0.30 * Math.max(0, sp);                      // elbows carry a little bend
+      tFoR = -0.28 - 0.30 * Math.max(0, -sp);
+      tPelYaw = 0.12 * sp;  tTorYaw = -0.12 * sp;  tHeadYaw = 0.12 * sp;   // head stays forward vs torso twist
+      bob = 0.05 * (0.5 - 0.5 * Math.cos(phi * 2));               // vertical bob at 2x gait freq
+      roll = 0.05 * sp;                                           // subtle side sway
+      lean = -0.10;                                               // lean into the direction of travel
+    } else if (workPose) {
+      if (!reduced) rt.work += dt * 4.5;
+      var typ = Math.sin(rt.work * 3), typ2 = Math.sin(rt.work * 3 + 1.7);
+      tArL = -0.52 + 0.05 * typ;  tArR = -0.52 + 0.05 * typ2;     // arms forward to the desk/fixture
+      tFoL = -0.60 - 0.12 * Math.max(0, typ);                     // hands "type" at the work surface
+      tFoR = -0.60 - 0.12 * Math.max(0, typ2);
+      tKnL = 0.05; tKnR = 0.05;
+      tHeadPitch = 0.20;                                          // look down at the task
+      lean = -0.14;
+      breathY = 1 + bs * 0.012;
     } else {
-      ud.footL.rotation.x += (0 - ud.footL.rotation.x) * Math.min(1, dt * 8);
-      ud.footR.rotation.x += (0 - ud.footR.rotation.x) * Math.min(1, dt * 8);
-      if (workPose) {
-        if (!reduced) rt.work += dt * 4.5;
-        headBob = Math.sin(rt.work * 2) * 0.02;               // typing bob
-        lean = 0.08;
-      } else {
-        breathScale = 1 + (reduced ? 0 : Math.sin(rt.breath) * 0.02);   // calm breathing
-        headBob = reduced ? 0 : Math.sin(rt.breath) * 0.01;
-        if (isMgr && mgr.state === 'speaking') headBob = Math.sin(mgr.speakPh * 9) * 0.03;
-        else if (isMgr && mgr.state === 'thinking') { headBob = Math.sin(time * 1.4) * 0.02; lean = Math.sin(time) * 0.04; }
+      // idle: gentle breathing, slow weight-shift/sway, occasional look-around
+      var ws = reduced ? 0 : Math.sin(time * 0.55 + rt.hash);
+      roll = 0.028 * ws;  tPelYaw = 0.05 * ws;
+      tArL = 0.04 + 0.05 * bs;  tArR = 0.04 - 0.05 * bs;
+      breathY = 1 + bs * 0.022;  breathX = 1 + bs * 0.012;
+      if (!reduced) {
+        rt.lookT -= dt;
+        if (rt.lookT <= 0) { rt.lookT = 2.2 + Math.random() * 3.4; rt.lookYawT = (Math.random() - 0.5) * 0.7; rt.lookPitchT = (Math.random() - 0.5) * 0.22; }
+      }
+      tHeadYaw = rt.lookYawT + 0.05 * ws;  tHeadPitch = rt.lookPitchT + bs * 0.02;
+      if (isMgr && mgr.state === 'speaking') {
+        var g6 = Math.sin(mgr.speakPh * 6);
+        tHeadPitch += Math.sin(mgr.speakPh * 9) * 0.05;
+        tArL = 0.10 + 0.14 * g6;  tArR = 0.10 - 0.14 * g6;        // presiding hand gestures
+        tFoL = -0.35 - 0.15 * Math.max(0, g6);  tFoR = -0.35 + 0.15 * Math.min(0, g6);
+      } else if (isMgr && mgr.state === 'thinking') {
+        tHeadYaw += Math.sin(time * 1.2) * 0.10;  lean = Math.sin(time) * 0.03;
       }
     }
 
+    // blink (runs in every state)
+    if (!reduced) {
+      if (rt.blink > 0) rt.blink -= dt;
+      else { rt.blinkT -= dt; if (rt.blinkT <= 0) { rt.blinkT = 2.6 + Math.random() * 3.8; rt.blink = 0.12; } }
+    }
+    var eyeScale = 1;
+    if (rt.blink > 0) { var bp = rt.blink / 0.12; eyeScale = 0.1 + 0.9 * (Math.abs(bp - 0.5) * 2); }
+    ud.eyeL.scale.y = eyeScale;  ud.eyeR.scale.y = eyeScale;
+
+    // ease every joint toward its target — this is what settles the limbs back
+    // to the idle pose when the character stops walking.
+    var LG = ud.legL, RG = ud.legR, LA = ud.armL, RA = ud.armR;
+    LG.thigh.rotation.x += (tThL - LG.thigh.rotation.x) * kJoint;
+    RG.thigh.rotation.x += (tThR - RG.thigh.rotation.x) * kJoint;
+    LG.shin.rotation.x  += (tKnL - LG.shin.rotation.x) * kJoint;
+    RG.shin.rotation.x  += (tKnR - RG.shin.rotation.x) * kJoint;
+    LG.foot.rotation.x  += (tFtL - LG.foot.rotation.x) * kJoint;
+    RG.foot.rotation.x  += (tFtR - RG.foot.rotation.x) * kJoint;
+    LA.upper.rotation.x += (tArL - LA.upper.rotation.x) * kJoint;
+    RA.upper.rotation.x += (tArR - RA.upper.rotation.x) * kJoint;
+    LA.fore.rotation.x  += (tFoL - LA.fore.rotation.x) * kJoint;
+    RA.fore.rotation.x  += (tFoR - RA.fore.rotation.x) * kJoint;
+    ud.pelvis.rotation.y += (tPelYaw - ud.pelvis.rotation.y) * kJoint;
+    ud.torso.rotation.y  += (tTorYaw - ud.torso.rotation.y) * kJoint;
+    ud.head.rotation.y   += (tHeadYaw - ud.head.rotation.y) * kJoint;
+    ud.head.rotation.x   += (tHeadPitch - ud.head.rotation.x) * kJoint;
+
+    // whole-body transform: position bob + eased lean/roll + pop / breathing scale
     g.position.set(mv.pos.x, baseY + bob + Math.max(0, rt.bounce.x), mv.pos.z);
-    ud.rig.rotation.z = roll;
-    ud.rig.rotation.x = lean;
+    ud.rig.rotation.z += (roll - ud.rig.rotation.z) * kBody;
+    ud.rig.rotation.x += (lean - ud.rig.rotation.x) * kBody;
     var pop = rt.pop.x;
-    ud.rig.scale.set(1, pop * breathScale, 1);
-    ud.head.position.y = 1.5 + headBob;
+    ud.rig.scale.set(1, pop, 1);                                  // brief squash/stretch punches
+    ud.torso.scale.set(breathX, breathY, breathX);               // breathing lives on the torso only
 
     // emissive drivers
     ud.rimMat.emissiveIntensity = rt.rim.x;
@@ -1083,7 +1246,7 @@
       // searching orbiting indicator
       if (rt.state === 'searching') {
         rt.orbitAngle += dt * 3; ud.searchOrb.visible = true;
-        ud.searchOrb.position.set(Math.cos(rt.orbitAngle) * 0.45, 1.75, Math.sin(rt.orbitAngle) * 0.45);
+        ud.searchOrb.position.set(Math.cos(rt.orbitAngle) * 0.45, 1.9, Math.sin(rt.orbitAngle) * 0.45);
       } else ud.searchOrb.visible = false;
     }
   }
