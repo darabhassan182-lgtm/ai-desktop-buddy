@@ -4,11 +4,13 @@
    (WebGL via Three.js r0.185). Dark, premium, stylized low-poly
    office complex: closed offices + corridors around a central
    Director atrium, dynamic lighting + soft shadows + UnrealBloom
-   + ACES tone mapping + fog, articulated low-poly HUMANOID characters
-   (a real rig of Group joints) that WALK with a proper gait cycle,
-   stay confined to their own office (leaving only to hand a result to
-   the Director in the atrium), an orbit/pan/zoom camera with a
-   focus(id) dolly tween, and calm ambient life.
+   + ACES tone mapping + fog, and real LOADED, SKINNED, skeletally
+   ANIMATED human characters (a rigged Mixamo model parsed from
+   window.NEXUS_CHAR_B64, deep-cloned + recolored per agent, driven by
+   real Idle/Walk clips crossfaded by movement) that stay confined to
+   their own office (leaving only to hand a result to the Director in
+   the atrium), an orbit/pan/zoom camera with a focus(id) dolly tween,
+   and calm ambient life.
 
    Three.js is a global bundle loaded BEFORE this classic <script>.
    Everything is read from window.NEXUS3D — no import/export, no
@@ -39,7 +41,9 @@
       EffectComposer = NX.EffectComposer,
       RenderPass = NX.RenderPass,
       UnrealBloomPass = NX.UnrealBloomPass,
-      OutputPass = NX.OutputPass;
+      OutputPass = NX.OutputPass,
+      GLTFLoader = NX.GLTFLoader,       // loader bundle (may be absent -> capsule fallback)
+      SkeletonUtils = NX.SkeletonUtils; // correct deep-clone for skinned meshes
 
   var warned = false;
   function warnOnce(msg) { if (warned) return; warned = true; try { console.warn(msg); } catch (e) {} }
@@ -90,6 +94,10 @@
   var DONE_DUR = 0.9;                  // "done" beat length
   var SPARK_CAP = 90;                  // transient point-particle ceiling
   var MOTE_COUNT = 140;                // dust motes
+  var CHAR_H = 1.7;                    // specialist figure height (world units, feet at y=0)
+  var CHAR_H_MGR = 1.96;               // the Director stands a touch taller
+  var CHAR_FADE = 0.26;                // idle<->walk crossfade seconds
+  var WALK_TS = 1.4;                   // walk-clip time-scale (tuned to minimize foot-slide)
 
   var COL = {
     bg: '#0a0c11', floor: '#252b37', corridor: '#1d222b', atrium: '#282f3b',
@@ -252,22 +260,7 @@
      6. ASSET BUILD (geometries + materials)  — once
      ========================================================== */
   function buildAssets() {
-    // --- shared humanoid rig geometry (ONE set, reused by every agent for performance) ---
-    GEO.hips = new THREE.BoxGeometry(0.30, 0.20, 0.22);
-    GEO.belt = new THREE.BoxGeometry(0.33, 0.07, 0.24);
-    GEO.torso = new THREE.CapsuleGeometry(0.165, 0.30, 5, 12);
-    GEO.neck = new THREE.CylinderGeometry(0.06, 0.07, 0.12, 8);
-    GEO.head = new THREE.SphereGeometry(0.16, 16, 12);
-    GEO.visor = new THREE.BoxGeometry(0.20, 0.055, 0.06);
-    GEO.eye = new THREE.SphereGeometry(0.032, 8, 8);
-    GEO.shoulder = new THREE.SphereGeometry(0.085, 10, 8);
-    GEO.upperArm = new THREE.CapsuleGeometry(0.055, 0.19, 4, 8);
-    GEO.foreArm = new THREE.CapsuleGeometry(0.05, 0.18, 4, 8);
-    GEO.hand = new THREE.SphereGeometry(0.06, 10, 8);
-    GEO.thigh = new THREE.CapsuleGeometry(0.085, 0.27, 5, 10);
-    GEO.shin = new THREE.CapsuleGeometry(0.07, 0.28, 5, 10);
-    GEO.foot = new THREE.BoxGeometry(0.12, 0.09, 0.24);
-    GEO.rim = new THREE.TorusGeometry(0.135, 0.02, 8, 20);
+    // --- character indicator geometry (the body itself is a loaded skinned model) ---
     GEO.searchOrb = new THREE.SphereGeometry(0.07, 10, 8);
     GEO.orb = new THREE.SphereGeometry(0.14, 12, 10);
     GEO.ring = new THREE.TorusGeometry(1, 0.05, 8, 32);
@@ -290,9 +283,7 @@
     MAT.prop = new THREE.MeshStandardMaterial({ color: COL.prop, roughness: 0.75 });
     MAT.pot = new THREE.MeshStandardMaterial({ color: COL.pot, roughness: 0.9 });
     MAT.leaf = new THREE.MeshStandardMaterial({ color: COL.leaf, emissive: COL.leafLit, emissiveIntensity: 0.06, roughness: 0.85 });
-    MAT.body = new THREE.MeshStandardMaterial({ color: '#20242d', roughness: 0.7, metalness: 0.05 });
-    MAT.head = new THREE.MeshStandardMaterial({ color: COL.face, roughness: 0.5, metalness: 0.15 });
-    MAT.eye = new THREE.MeshStandardMaterial({ color: '#0a0d14', emissive: '#e8f0ff', emissiveIntensity: 0.9, roughness: 0.3 });
+    // (procedural body/head/eye materials removed — the loaded model is recolored per agent)
     MAT.pool = new THREE.MeshStandardMaterial({ color: COL.pool, emissive: COL.pool, emissiveIntensity: 0.06, roughness: 1.0, transparent: true, opacity: 0.5, depthWrite: false });
     // per-accent orb materials (unlit + bloom)
     MAT.orb = {};
@@ -339,6 +330,7 @@
     for (var j = 0; j < IDS.length; j++) { var id = IDS[j], A = AGENTS[id]; LAY[id] = { cx: A.cx, cz: A.cz }; }
 
     buildPeople();
+    startCharacterLoad();   // async GLTF parse; skinned bodies attach when it resolves
   }
 
   function buildLights() {
@@ -702,93 +694,172 @@
   }
 
   /* ==========================================================
-     11. PEOPLE  (shared humanoid rig, per-accent materials)
-     ========================================================== */
-  // Suit colour = the neutral base pushed toward the agent accent, so each body
-  // still reads at a glance without going neon (the emissive rim/visor do the pop).
-  function accentSuit(accent) {
-    var c = new THREE.Color(COL.suit); c.lerp(new THREE.Color(accent), 0.5); return c;
-  }
+     11. PEOPLE  (loaded skinned human model, recolored per agent)
+     ==========================================================
+     The body is a rigged Mixamo human parsed ONCE from
+     window.NEXUS_CHAR_B64, then deep-cloned per agent with
+     SkeletonUtils (independent skeletons), recolored to the agent
+     accent, normalized to ~1.7 world-units with feet at y=0 and turned
+     to face +Z (the nav's forward), and driven by an AnimationMixer
+     that crossfades Idle<->Walk with movement. makePerson() builds only
+     the lightweight GROUP SHELL synchronously so the nav/placement/
+     confinement logic works immediately; the skinned mesh + mixer are
+     attached later, when the GLB parse resolves (or a capsule fallback
+     if the model is missing / fails to parse).                  ====== */
 
-  // A stylized, low-poly humanoid built as a HIERARCHY of Group nodes so limbs
-  // articulate:  rig -> pelvis -> torso -> {neck -> head}, torso -> arms,
-  //              pelvis -> legs.  Geometry is shared (GEO.*); only a handful of
-  //              per-accent materials are created per character.
+  // makePerson builds the reusable shell only: the outer group (moved &
+  // rotated by nav), an inner "rig" group (carries the pop-squash / done-hop
+  // punches + the body), and the floating "searching" indicator. The skinned
+  // body + mixer are added by buildCharacterBody()/buildFallbackBody().
   function makePerson(id) {
     var A = AGENTS[id], accent = A.accent, isMgr = id === 'manager';
     var group = new THREE.Group();
-    var rig = new THREE.Group(); group.add(rig);
+    var rig = new THREE.Group(); group.add(rig);   // holds the body; scaled for the pop punch
 
-    var suitMat  = new THREE.MeshStandardMaterial({ color: accentSuit(accent), roughness: 0.6, metalness: 0.12 });
-    var trimMat  = new THREE.MeshStandardMaterial({ color: accent, emissive: accent, emissiveIntensity: 0.18, roughness: 0.42, metalness: 0.3 });
-    var rimMat   = new THREE.MeshStandardMaterial({ color: accent, emissive: accent, emissiveIntensity: 0.35, roughness: 0.5, metalness: 0.2 });
-    var visorMat = new THREE.MeshStandardMaterial({ color: accent, emissive: accent, emissiveIntensity: isMgr ? 0.8 : 0.6, roughness: 0.4, metalness: 0.2 });
-
-    function part(geo, mat, x, y, z, cast) {
-      var m = new THREE.Mesh(geo, mat); m.position.set(x || 0, y || 0, z || 0);
-      m.castShadow = (cast !== false); m.receiveShadow = true; return m;
-    }
-
-    // ----- pelvis (skeleton root) -----
-    var pelvis = new THREE.Group(); pelvis.position.y = 0.95; rig.add(pelvis);
-    pelvis.add(part(GEO.hips, suitMat, 0, 0, 0));
-    pelvis.add(part(GEO.belt, trimMat, 0, 0.02, 0));
-
-    // ----- torso -----
-    var torso = new THREE.Group(); pelvis.add(torso);
-    torso.add(part(GEO.torso, suitMat, 0, 0.24, 0));
-    var rim = new THREE.Mesh(GEO.rim, rimMat); rim.position.set(0, 0.30, 0.12); rim.rotation.x = Math.PI / 2; torso.add(rim);
-
-    // ----- neck + head (with a friendly two-eye face + accent brow) -----
-    var neck = new THREE.Group(); neck.position.y = 0.52; torso.add(neck);
-    neck.add(part(GEO.neck, suitMat, 0, 0.03, 0, false));
-    var head = new THREE.Group(); head.position.y = 0.12; neck.add(head);
-    head.add(part(GEO.head, MAT.head, 0, 0.05, 0));
-    var visor = new THREE.Mesh(GEO.visor, visorMat); visor.position.set(0, 0.075, 0.15); head.add(visor);
-    var eyeL = new THREE.Mesh(GEO.eye, MAT.eye); eyeL.position.set(-0.06, 0.01, 0.155); head.add(eyeL);
-    var eyeR = new THREE.Mesh(GEO.eye, MAT.eye); eyeR.position.set(0.06, 0.01, 0.155); head.add(eyeR);
-
-    // ----- arms (shoulder -> upperArm -> foreArm -> hand) -----
-    function arm(sx) {
-      var shoulder = new THREE.Group(); shoulder.position.set(sx, 0.46, 0); torso.add(shoulder);
-      shoulder.add(part(GEO.shoulder, trimMat, 0, 0, 0));
-      var upper = new THREE.Group(); shoulder.add(upper);
-      upper.add(part(GEO.upperArm, suitMat, 0, -0.15, 0));
-      var fore = new THREE.Group(); fore.position.y = -0.30; upper.add(fore);
-      fore.add(part(GEO.foreArm, suitMat, 0, -0.14, 0));
-      var hand = new THREE.Group(); hand.position.y = -0.28; fore.add(hand);
-      hand.add(part(GEO.hand, trimMat, 0, -0.02, 0));
-      return { shoulder: shoulder, upper: upper, fore: fore, hand: hand };
-    }
-    var armL = arm(0.19), armR = arm(-0.19);
-
-    // ----- legs (hip -> thigh -> shin -> foot) -----
-    function leg(hx) {
-      var hip = new THREE.Group(); hip.position.set(hx, 0, 0); pelvis.add(hip);
-      var thigh = new THREE.Group(); hip.add(thigh);
-      thigh.add(part(GEO.thigh, suitMat, 0, -0.22, 0));
-      var shin = new THREE.Group(); shin.position.y = -0.44; thigh.add(shin);
-      shin.add(part(GEO.shin, suitMat, 0, -0.21, 0));
-      var foot = new THREE.Group(); foot.position.y = -0.42; shin.add(foot);
-      foot.add(part(GEO.foot, trimMat, 0, -0.045, 0.06));
-      return { hip: hip, thigh: thigh, shin: shin, foot: foot };
-    }
-    var legL = leg(0.10), legR = leg(-0.10);
-
-    // ----- "searching" indicator (kept from the old build) -----
+    // "searching" indicator (a non-body state cue) — orbits above the head.
     var searchMat = new THREE.MeshBasicMaterial({ color: accent });
-    var searchOrb = new THREE.Mesh(GEO.searchOrb, searchMat); searchOrb.position.set(0, 1.9, 0.42); searchOrb.visible = false; rig.add(searchOrb);
+    var searchOrb = new THREE.Mesh(GEO.searchOrb, searchMat);
+    searchOrb.position.set(0, 1.9, 0.42); searchOrb.visible = false; group.add(searchOrb);
 
-    if (isMgr) group.scale.setScalar(1.12);
-    // store every articulating group ref so the walk + idle animations can rotate them
     group.userData = {
-      rig: rig, pelvis: pelvis, torso: torso, neck: neck, head: head,
-      visor: visor, visorMat: visorMat, rim: rim, rimMat: rimMat,
-      eyeL: eyeL, eyeR: eyeR,
-      armL: armL, armR: armR, legL: legL, legR: legR,
-      searchOrb: searchOrb
+      rig: rig, searchOrb: searchOrb,
+      model: null, mixer: null, idle: null, walk: null,
+      walking: false, bodyMats: [], isMgr: isMgr, built: false
     };
     return group;
+  }
+
+  /* ---- loaded / skinned / animated body (decode -> parse -> clone per agent) ---- */
+  var charTriedFallback = false;
+
+  // Decode the base64 GLB to an ArrayBuffer (no fetch/loader.load — blocked under file://).
+  function b64buf(b64) {
+    var bin = atob(b64), n = bin.length, u = new Uint8Array(n);
+    for (var i = 0; i < n; i++) u[i] = bin.charCodeAt(i);
+    return u.buffer;
+  }
+  function findClip(clips, name) {
+    if (!clips) return null;
+    var i, lc = String(name).toLowerCase();
+    for (i = 0; i < clips.length; i++) if (clips[i] && clips[i].name === name) return clips[i];
+    for (i = 0; i < clips.length; i++) if (clips[i] && String(clips[i].name).toLowerCase() === lc) return clips[i];
+    return null;
+  }
+
+  // Parse the GLB from the global base64. Async via callback: the world already
+  // exists; bodies pop in when this resolves. Never throws if the model is absent.
+  function startCharacterLoad() {
+    var b64 = window.NEXUS_CHAR_B64;
+    if (!b64 || !GLTFLoader || !SkeletonUtils) { warnOnce('[World] character model unavailable — using capsules'); buildFallbackCharacters(); return; }
+    var gloader, buf;
+    try { gloader = new GLTFLoader(); buf = b64buf(b64); }
+    catch (e) { warnOnce('[World] character decode failed — using capsules'); buildFallbackCharacters(); return; }
+    try {
+      gloader.parse(buf, '', function (gltf) {
+        try { onCharacterModel(gltf); }
+        catch (e2) { warnOnce('[World] character build failed — using capsules'); buildFallbackCharacters(); }
+      }, function () {
+        warnOnce('[World] character parse failed — using capsules'); buildFallbackCharacters();
+      });
+    } catch (e3) { warnOnce('[World] character parse failed — using capsules'); buildFallbackCharacters(); }
+  }
+
+  function onCharacterModel(gltf) {
+    var clips = (gltf && gltf.animations) || [];
+    for (var i = 0; i < IDS.length; i++) {
+      var id = IDS[i];
+      try { buildCharacterBody(id, gltf, clips); }
+      catch (e) { buildFallbackBody(id); }   // per-agent safety net
+    }
+  }
+
+  // Clone + recolor + normalize + wire the mixer for one agent's body.
+  function buildCharacterBody(id, gltf, clips) {
+    var g = people[id]; if (!g) return;
+    var ud = g.userData; if (ud.built) return;
+    var A = AGENTS[id], accent = A.accent, isMgr = (id === 'manager');
+
+    // SkeletonUtils.clone correctly clones the skeleton for skinned meshes.
+    var clone = SkeletonUtils.clone(gltf.scene);
+
+    // Recolor to a clean accent figure: a fresh MeshStandardMaterial per mesh
+    // (r0.185 skins SkinnedMesh automatically — no material.skinning flag). Keep
+    // shadows; disable frustum culling so animated skins never pop out of view.
+    ud.bodyMats = [];
+    clone.traverse(function (o) {
+      if (o && (o.isMesh || o.isSkinnedMesh)) {
+        var mat = new THREE.MeshStandardMaterial({ color: accent, emissive: accent, emissiveIntensity: 0.12, roughness: 0.62, metalness: 0.1 });
+        o.material = mat;
+        o.castShadow = true; o.receiveShadow = true; o.frustumCulled = false;
+        ud.bodyMats.push(mat);
+      }
+    });
+
+    // Normalize size/feet/facing: scale to target height, drop feet to y=0,
+    // and face +Z (Mixamo faces -Z, so yaw the model 180° inside the group).
+    var bb = new THREE.Box3().setFromObject(clone);
+    var srcH = (bb.max.y - bb.min.y) || 1;
+    var s = (isMgr ? CHAR_H_MGR : CHAR_H) / srcH;
+    clone.scale.setScalar(s);
+    clone.position.y = -bb.min.y * s;
+    clone.rotation.y = Math.PI;
+    ud.rig.add(clone);
+    ud.model = clone;
+
+    // AnimationMixer: play Idle by default, crossfade Walk in while moving.
+    var mixer = new THREE.AnimationMixer(clone);
+    ud.mixer = mixer;
+    var idleClip = findClip(clips, 'Idle'), walkClip = findClip(clips, 'Walk');
+    if (idleClip) { ud.idle = mixer.clipAction(idleClip); ud.idle.setLoop(THREE.LoopRepeat, Infinity); ud.idle.play(); }
+    if (walkClip) {
+      ud.walk = mixer.clipAction(walkClip);
+      ud.walk.setLoop(THREE.LoopRepeat, Infinity);
+      ud.walk.setEffectiveTimeScale(WALK_TS);
+      ud.walk.play(); ud.walk.setEffectiveWeight(0);   // silent until the agent moves
+    }
+    ud.walking = false;
+    ud.built = true;
+  }
+
+  function buildFallbackCharacters() {
+    if (charTriedFallback) return; charTriedFallback = true;
+    for (var i = 0; i < IDS.length; i++) buildFallbackBody(IDS[i]);
+  }
+  // Simple accent capsule so the app still runs (and never blanks) without the model.
+  function buildFallbackBody(id) {
+    var g = people[id]; if (!g) return;
+    var ud = g.userData; if (ud.built) return;
+    var A = AGENTS[id], isMgr = (id === 'manager');
+    var h = isMgr ? CHAR_H_MGR : CHAR_H, r = 0.34;
+    var mat = new THREE.MeshStandardMaterial({ color: A.accent, emissive: A.accent, emissiveIntensity: 0.12, roughness: 0.62, metalness: 0.1 });
+    var caps = new THREE.Mesh(new THREE.CapsuleGeometry(r, Math.max(0.1, h - r * 2), 6, 14), mat);
+    caps.position.y = h / 2; caps.castShadow = true; caps.receiveShadow = true; caps.frustumCulled = false;
+    ud.rig.add(caps);
+    ud.model = caps; ud.bodyMats = [mat];
+    ud.mixer = null; ud.idle = null; ud.walk = null; ud.walking = false;
+    ud.built = true;
+  }
+
+  // Crossfade Idle<->Walk on a movement-state change.
+  function setAgentWalking(id, on) {
+    var ud = people[id].userData;
+    if (!ud || !ud.mixer || ud.walking === on) return;
+    if (!ud.idle || !ud.walk) { ud.walking = on; return; }   // only one clip -> nothing to blend
+    ud.walking = on;
+    var to = on ? ud.walk : ud.idle, from = on ? ud.idle : ud.walk;
+    to.enabled = true;
+    to.setEffectiveTimeScale(on ? WALK_TS : 1);
+    to.setEffectiveWeight(1);
+    to.play();
+    try { to.crossFadeFrom(from, CHAR_FADE, false); }
+    catch (e) { to.setEffectiveWeight(1); from.setEffectiveWeight(0); }
+  }
+  // Advance one agent's mixer each frame; walk while it follows a nav path.
+  function updateCharacterAnim(id, dt) {
+    var ud = people[id].userData; if (!ud || !ud.mixer) return;
+    var moving = !!MV[id].moving && !reduced;
+    if (moving !== ud.walking) setAgentWalking(id, moving);
+    ud.mixer.update(dt);
   }
 
   function makeRT(id) {
@@ -1110,7 +1181,6 @@
     // eased scalars
     ez(rt.rim, dt, 6); ez(rt.roomGlow, dt, 5); ez(rt.screen, dt, 6);
     stepSpring(rt.pop, dt); stepSpring(rt.bounce, dt);
-    if (!reduced) { rt.breath += dt * (2 * Math.PI / (3.6 + rt.hash * 0.05)); }
     if (rt.speaking) rt.mouthPh += dt;
 
     // done -> settle back to idle after the beat
@@ -1132,108 +1202,24 @@
     var baseY = 0;
     if (isMgr) { var onDais = Math.hypot(mv.pos.x, mv.pos.z) < 1.6; mv.daisY += ((onDais ? 0.3 : 0) - mv.daisY) * Math.min(1, dt * 8); baseY = mv.daisY; }
 
-    // ---------- articulated pose: real walk cycle / idle life / typing ----------
-    var moving = mv.moving && !reduced;
-    var workPose = !mv.moving && (rt.state === 'working' || rt.state === 'searching') && (mv.task === 'atwork' || mv.task === 'workstep');
-    var kJoint = Math.min(1, dt * 16), kBody = Math.min(1, dt * 12);
-    var bs = reduced ? 0 : Math.sin(rt.breath);
+    // ---------- skeletal body: Idle/Walk crossfade + mixer advance ----------
+    // The loaded model's AnimationMixer now drives every limb; we only carry the
+    // whole-body state punches (assign squash, done hop) and the accent glow.
+    updateCharacterAnim(id, dt);
 
-    // joint rotation targets — default to a relaxed idle stance
-    var tThL = 0, tThR = 0, tKnL = 0.06, tKnR = 0.06, tFtL = 0, tFtR = 0;
-    var tArL = 0.03, tArR = 0.03, tFoL = -0.18, tFoR = -0.18;
-    var tPelYaw = 0, tTorYaw = 0, tHeadYaw = 0, tHeadPitch = 0;
-    var bob = 0, roll = 0, lean = 0, breathX = 1, breathY = 1;
+    // whole-body transform: nav position + "done" hop; brief pop squash on the body.
+    // (No procedural bob/roll/lean/breathing — the Idle/Walk clips own the motion.)
+    g.position.set(mv.pos.x, baseY + Math.max(0, rt.bounce.x), mv.pos.z);
+    if (ud.rig) { var pop = rt.pop.x; ud.rig.scale.set(1, pop, 1); }
 
-    if (moving) {
-      // Gait phase advances with distance travelled (mv.stepPhase). Thighs swing
-      // fore/aft, knees bend on the swing, arms counter-swing, torso bobs at 2x,
-      // hips/shoulders counter-rotate, plus a small forward lean.
-      var phi = mv.stepPhase, sp = Math.sin(phi), cp = Math.cos(phi);
-      tThL = -0.52 * sp;  tThR = 0.52 * sp;                       // fore/aft leg swing
-      // Knee bends through the SWING (foot moving forward, cos(phi)>0) and stays
-      // straight through STANCE (foot planted, moving backward) -> feet don't slide.
-      tKnL = 0.14 + 0.95 * Math.max(0, cp);
-      tKnR = 0.14 + 0.95 * Math.max(0, -cp);
-      tFtL = clamp(-(tThL + tKnL) * 0.45, -0.45, 0.55);           // ankle keeps foot near flat/ground
-      tFtR = clamp(-(tThR + tKnR) * 0.45, -0.45, 0.55);
-      tArL = 0.42 * sp;   tArR = -0.42 * sp;                      // arms counter-swing (contralateral)
-      tFoL = -0.28 - 0.30 * Math.max(0, sp);                      // elbows carry a little bend
-      tFoR = -0.28 - 0.30 * Math.max(0, -sp);
-      tPelYaw = 0.12 * sp;  tTorYaw = -0.12 * sp;  tHeadYaw = 0.12 * sp;   // head stays forward vs torso twist
-      bob = 0.05 * (0.5 - 0.5 * Math.cos(phi * 2));               // vertical bob at 2x gait freq
-      roll = 0.05 * sp;                                           // subtle side sway
-      lean = -0.10;                                               // lean into the direction of travel
-    } else if (workPose) {
-      if (!reduced) rt.work += dt * 4.5;
-      var typ = Math.sin(rt.work * 3), typ2 = Math.sin(rt.work * 3 + 1.7);
-      tArL = -0.52 + 0.05 * typ;  tArR = -0.52 + 0.05 * typ2;     // arms forward to the desk/fixture
-      tFoL = -0.60 - 0.12 * Math.max(0, typ);                     // hands "type" at the work surface
-      tFoR = -0.60 - 0.12 * Math.max(0, typ2);
-      tKnL = 0.05; tKnR = 0.05;
-      tHeadPitch = 0.20;                                          // look down at the task
-      lean = -0.14;
-      breathY = 1 + bs * 0.012;
-    } else {
-      // idle: gentle breathing, slow weight-shift/sway, occasional look-around
-      var ws = reduced ? 0 : Math.sin(time * 0.55 + rt.hash);
-      roll = 0.028 * ws;  tPelYaw = 0.05 * ws;
-      tArL = 0.04 + 0.05 * bs;  tArR = 0.04 - 0.05 * bs;
-      breathY = 1 + bs * 0.022;  breathX = 1 + bs * 0.012;
-      if (!reduced) {
-        rt.lookT -= dt;
-        if (rt.lookT <= 0) { rt.lookT = 2.2 + Math.random() * 3.4; rt.lookYawT = (Math.random() - 0.5) * 0.7; rt.lookPitchT = (Math.random() - 0.5) * 0.22; }
-      }
-      tHeadYaw = rt.lookYawT + 0.05 * ws;  tHeadPitch = rt.lookPitchT + bs * 0.02;
-      if (isMgr && mgr.state === 'speaking') {
-        var g6 = Math.sin(mgr.speakPh * 6);
-        tHeadPitch += Math.sin(mgr.speakPh * 9) * 0.05;
-        tArL = 0.10 + 0.14 * g6;  tArR = 0.10 - 0.14 * g6;        // presiding hand gestures
-        tFoL = -0.35 - 0.15 * Math.max(0, g6);  tFoR = -0.35 + 0.15 * Math.min(0, g6);
-      } else if (isMgr && mgr.state === 'thinking') {
-        tHeadYaw += Math.sin(time * 1.2) * 0.10;  lean = Math.sin(time) * 0.03;
-      }
+    // emissive state glow on the recolored figure: brightens when assigned/working,
+    // pulses while speaking (preserves the old rim/visor cue on the new body).
+    if (ud.bodyMats && ud.bodyMats.length) {
+      var eI = 0.12 + Math.max(0, rt.rim.x - 0.35) * 0.42;
+      var speakingNow = rt.speaking && (!isMgr || mgr.speaking);
+      if (speakingNow) eI += 0.20 * (0.5 + 0.5 * Math.sin((isMgr ? mgr.speakPh : rt.mouthPh) * 12));
+      for (var mi = 0; mi < ud.bodyMats.length; mi++) ud.bodyMats[mi].emissiveIntensity = eI;
     }
-
-    // blink (runs in every state)
-    if (!reduced) {
-      if (rt.blink > 0) rt.blink -= dt;
-      else { rt.blinkT -= dt; if (rt.blinkT <= 0) { rt.blinkT = 2.6 + Math.random() * 3.8; rt.blink = 0.12; } }
-    }
-    var eyeScale = 1;
-    if (rt.blink > 0) { var bp = rt.blink / 0.12; eyeScale = 0.1 + 0.9 * (Math.abs(bp - 0.5) * 2); }
-    ud.eyeL.scale.y = eyeScale;  ud.eyeR.scale.y = eyeScale;
-
-    // ease every joint toward its target — this is what settles the limbs back
-    // to the idle pose when the character stops walking.
-    var LG = ud.legL, RG = ud.legR, LA = ud.armL, RA = ud.armR;
-    LG.thigh.rotation.x += (tThL - LG.thigh.rotation.x) * kJoint;
-    RG.thigh.rotation.x += (tThR - RG.thigh.rotation.x) * kJoint;
-    LG.shin.rotation.x  += (tKnL - LG.shin.rotation.x) * kJoint;
-    RG.shin.rotation.x  += (tKnR - RG.shin.rotation.x) * kJoint;
-    LG.foot.rotation.x  += (tFtL - LG.foot.rotation.x) * kJoint;
-    RG.foot.rotation.x  += (tFtR - RG.foot.rotation.x) * kJoint;
-    LA.upper.rotation.x += (tArL - LA.upper.rotation.x) * kJoint;
-    RA.upper.rotation.x += (tArR - RA.upper.rotation.x) * kJoint;
-    LA.fore.rotation.x  += (tFoL - LA.fore.rotation.x) * kJoint;
-    RA.fore.rotation.x  += (tFoR - RA.fore.rotation.x) * kJoint;
-    ud.pelvis.rotation.y += (tPelYaw - ud.pelvis.rotation.y) * kJoint;
-    ud.torso.rotation.y  += (tTorYaw - ud.torso.rotation.y) * kJoint;
-    ud.head.rotation.y   += (tHeadYaw - ud.head.rotation.y) * kJoint;
-    ud.head.rotation.x   += (tHeadPitch - ud.head.rotation.x) * kJoint;
-
-    // whole-body transform: position bob + eased lean/roll + pop / breathing scale
-    g.position.set(mv.pos.x, baseY + bob + Math.max(0, rt.bounce.x), mv.pos.z);
-    ud.rig.rotation.z += (roll - ud.rig.rotation.z) * kBody;
-    ud.rig.rotation.x += (lean - ud.rig.rotation.x) * kBody;
-    var pop = rt.pop.x;
-    ud.rig.scale.set(1, pop, 1);                                  // brief squash/stretch punches
-    ud.torso.scale.set(breathX, breathY, breathX);               // breathing lives on the torso only
-
-    // emissive drivers
-    ud.rimMat.emissiveIntensity = rt.rim.x;
-    var vBase = isMgr ? 0.8 : 0.6;
-    var speakingNow = rt.speaking && (!isMgr || mgr.speaking);
-    ud.visorMat.emissiveIntensity = vBase + (speakingNow ? (0.4 * (0.5 + 0.5 * Math.sin((isMgr ? mgr.speakPh : rt.mouthPh) * 12))) : 0);
 
     if (!isMgr) {
       if (roomLights[id]) roomLights[id].intensity = rt.roomGlow.x;

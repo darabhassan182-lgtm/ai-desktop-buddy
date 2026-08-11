@@ -1,11 +1,12 @@
 {
-  "version": "0.8.0",
+  "version": "0.9.0",
   "files": [
     "index.html",
     "styles.css",
     "renderer.js",
     "voice.js",
     "three.bundle.js",
+    "character-model.js",
     "game.js",
     "memory.js",
     "memory.css"
