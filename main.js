@@ -1,5 +1,5 @@
 // Electron main process — the "shell": window, Director orchestrator, voice, updates, memory.
-const { app, BrowserWindow, ipcMain, session, safeStorage } = require('electron');
+const { app, BrowserWindow, ipcMain, session, safeStorage, desktopCapturer } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { execFile } = require('child_process');
@@ -32,7 +32,7 @@ const DIRECTOR_SYSTEM = `You are Agent Sea, the Director of an AI studio. You ha
 - inbox (Echo): drafting Slack messages and email replies
 - api (Wire): API calls and automation tasks
 You also have a long-term MEMORY. Use the \`remember\` tool whenever the user shares durable information (their name, company, preferences, a repeatable process/workflow) so you can act faster next time; use \`forget\` to remove an outdated item by id. Never re-ask for something already in MEMORY, and never ask for a stored credential's value.
-For each user request, delegate to the right specialist(s) — you may delegate more than once. For simple conversation you can answer directly. When results come back, reply with a concise, natural spoken answer (2-5 sentences, no markdown, no bullet points, no URLs — it will be read aloud).`;
+You are calm, refined, and efficient — like Jarvis from Iron Man. For each request, delegate to the right specialist(s) when needed (you may delegate more than once); for simple things, answer directly. Reply with a VERY brief spoken answer — ideally one sentence, at most two — natural and composed, no markdown, no bullet points, no URLs (it is read aloud). Address the user directly.`;
 
 const DELEGATE_TOOL = {
   name: 'delegate',
@@ -208,7 +208,7 @@ function cmpVersions(a, b) {
   for (let i = 0; i < 3; i++) { const d = (pa[i] || 0) - (pb[i] || 0); if (d) return d > 0 ? 1 : -1; }
   return 0;
 }
-const CONTENT_FILES = ['index.html', 'styles.css', 'renderer.js', 'voice.js', 'game.js', 'memory.js', 'memory.css', 'three.bundle.js', 'character-model.js', 'manifest.json'];
+const CONTENT_FILES = ['index.html', 'styles.css', 'renderer.js', 'voice.js', 'game.js', 'memory.js', 'memory.css', 'three.bundle.js', 'character-model.js', 'jarvis.js', 'jarvis.css', 'manifest.json'];
 function syncBundledContent() {
   const src = bundledContentDir(), dst = userContentDir();
   const bundled = readManifest(src), user = readManifest(dst);
@@ -233,6 +233,14 @@ app.whenReady().then(() => {
   initClient();
   if (app.isPackaged) syncBundledContent();
   session.defaultSession.setPermissionRequestHandler((_wc, _p, cb) => cb(true));
+  // Let Sea "see" the screen (getDisplayMedia) — hand back the primary screen source.
+  try {
+    session.defaultSession.setDisplayMediaRequestHandler((request, callback) => {
+      desktopCapturer.getSources({ types: ['screen'] }).then((sources) => {
+        callback(sources && sources[0] ? { video: sources[0] } : {});
+      }).catch(() => callback({}));
+    });
+  } catch (_) {}
   createWindow();
 });
 app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
@@ -292,9 +300,45 @@ function speak(text, onDone) {
   if (sayProc) { try { sayProc.kill(); } catch (_) {} }
   const clean = (text || '').slice(0, 4000);
   if (!clean) { onDone && onDone(); return; }
-  sayProc = execFile('say', ['-r', '188', clean], () => { onDone && onDone(); });
+  const voice = loadConfig().voice || 'Daniel';   // refined British "Jarvis" voice (macOS built-in)
+  sayProc = execFile('say', ['-v', voice, '-r', '200', clean], (err) => {
+    if (err) { sayProc = execFile('say', ['-r', '195', clean], () => { onDone && onDone(); }); }
+    else { onDone && onDone(); }
+  });
 }
 ipcMain.on('buddy:stopSpeaking', () => { if (sayProc) { try { sayProc.kill(); } catch (_) {} } });
+
+// --- Vision: Sea looks at a captured image (screen/camera) and answers ------
+ipcMain.handle('orch:askVision', async (event, payload) => {
+  const emit = (evt, p) => { try { event.sender.send('orch:' + evt, p); } catch (_) {} };
+  if (!client) { emit('error', { message: 'Add your Anthropic API key first.' }); return { ok: false }; }
+  const text = (payload && payload.text) || 'What do you see?';
+  const img = (payload && payload.image) || '';
+  const m = /^data:(image\/[a-zA-Z0-9.+-]+);base64,(.*)$/.exec(img);
+  if (!m) { emit('error', { message: 'No image captured.' }); return { ok: false }; }
+  emit('manager', { state: 'thinking' });
+  try {
+    const stream = client.messages.stream({
+      model: 'claude-opus-4-8', max_tokens: 1024,
+      system: 'You are Agent Sea, a calm, refined Jarvis-like assistant. Look at the image and answer the user in ONE or two short spoken sentences — no markdown, no lists, no URLs.',
+      messages: [{ role: 'user', content: [
+        { type: 'image', source: { type: 'base64', media_type: m[1], data: m[2] } },
+        { type: 'text', text: String(text) },
+      ] }],
+    });
+    const msg = await stream.finalMessage();
+    const finalText = msg.content.filter((b) => b.type === 'text').map((b) => b.text).join(' ').trim();
+    emit('manager', { state: 'speaking' });
+    if (finalText) emit('delta', { text: finalText });
+    emit('answer', { text: finalText });
+    speak(finalText, () => emit('manager', { state: 'idle' }));
+    return { ok: true, text: finalText };
+  } catch (err) {
+    const mm = (err && err.message) || String(err);
+    emit('error', { message: mm }); emit('manager', { state: 'idle' });
+    return { ok: false, error: mm };
+  }
+});
 
 // --- Run one specialist -----------------------------------------------------
 async function runSubAgent(id, task, emit) {
@@ -339,7 +383,7 @@ ipcMain.handle('orch:ask', async (event, text) => {
   try {
     for (let turn = 0; turn < 8; turn++) {
       const stream = client.messages.stream({
-        model: 'claude-opus-4-8', max_tokens: 2048, system, tools: DIRECTOR_TOOLS, messages,
+        model: 'claude-opus-4-8', max_tokens: 1024, system, tools: DIRECTOR_TOOLS, messages,
       });
       const msg = await stream.finalMessage();
       messages.push({ role: 'assistant', content: msg.content });

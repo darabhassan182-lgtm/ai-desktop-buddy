@@ -7,6 +7,7 @@
   <title>Nexus</title>
   <link rel="stylesheet" href="styles.css" />
   <link rel="stylesheet" href="memory.css" />
+  <link rel="stylesheet" href="jarvis.css" />
 </head>
 <body>
   <!-- Full-bleed game canvas behind everything -->
@@ -20,6 +21,8 @@
       <span id="verTag" class="ver">v0.0.0</span>
     </div>
     <div class="topbar-actions">
+      <button id="jarvisBtn" class="ghost-btn" type="button" title="Hands-free — say &quot;Sea, …&quot;" aria-label="Hands-free">🎧</button>
+      <button id="visionBtn" class="ghost-btn" type="button" title="Let Sea see your screen" aria-label="Vision">👁️</button>
       <button id="memoryBtn" class="ghost-btn" type="button" title="Memory" aria-label="Memory">🧠</button>
       <button id="updateBtn" class="ghost-btn" type="button" title="Check for updates" aria-label="Check for updates">⟳</button>
       <button id="settingsBtn" class="ghost-btn" type="button" title="Settings" aria-label="Settings">⚙️</button>
@@ -34,6 +37,9 @@
 
   <!-- Transcript subtitle -->
   <div id="subtitle" aria-live="polite"></div>
+
+  <!-- Jarvis HUD orb -->
+  <div id="jarvisOrb" class="jarvis-orb idle"><div id="jarvisOrbCore"></div></div>
 
   <!-- Floating glass command bar -->
   <div id="commandBar" role="group" aria-label="Ask the Director">
@@ -95,5 +101,6 @@
   <script src="game.js"></script>
   <script src="renderer.js"></script>
   <script src="memory.js"></script>
+  <script src="jarvis.js"></script>
 </body>
 </html>

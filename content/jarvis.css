@@ -1,0 +1,35 @@
+/* NEXUS — Jarvis mode: reactive HUD orb + buttons */
+#jarvisOrb {
+  position: fixed; left: 50%; bottom: 96px; transform: translateX(-50%);
+  width: 56px; height: 56px; z-index: 36; pointer-events: none;
+  display: grid; place-items: center;
+  filter: drop-shadow(0 0 12px rgba(124, 156, 255, 0.55));
+  transition: opacity 0.3s ease;
+}
+#jarvisOrbCore {
+  width: 34px; height: 34px; border-radius: 50%;
+  background: radial-gradient(circle at 40% 35%, #dfe9ff, #7c9cff 55%, #3a5bd0 100%);
+  box-shadow: 0 0 20px rgba(124, 156, 255, 0.75), inset 0 0 9px rgba(255, 255, 255, 0.5);
+  transition: transform 0.06s linear;
+}
+#jarvisOrb::before {
+  content: ''; position: absolute; width: 56px; height: 56px; border-radius: 50%;
+  border: 2px solid rgba(124, 156, 255, 0.55); opacity: 0;
+}
+.jarvis-orb.idle { opacity: 0.28; }
+.jarvis-orb.listening { opacity: 1; }
+.jarvis-orb.listening::before { animation: jarvisPulse 1.7s ease-out infinite; }
+.jarvis-orb.thinking { opacity: 1; }
+.jarvis-orb.thinking #jarvisOrbCore { animation: jarvisSpin 1.1s linear infinite; }
+.jarvis-orb.speaking { opacity: 1; }
+.jarvis-orb.speaking::before { animation: jarvisPulse 0.85s ease-out infinite; }
+@keyframes jarvisPulse { 0% { transform: scale(1); opacity: 0.6; } 100% { transform: scale(1.9); opacity: 0; } }
+@keyframes jarvisSpin { to { transform: rotate(360deg); } }
+
+#jarvisBtn.active {
+  background: var(--nova, #7c9cff); color: #0b0e14; border-color: transparent;
+  box-shadow: 0 0 14px rgba(124, 156, 255, 0.6);
+}
+#jarvisBtn.active { animation: jarvisBtnPulse 1.8s ease-in-out infinite; }
+@keyframes jarvisBtnPulse { 0%, 100% { box-shadow: 0 0 8px rgba(124,156,255,0.5); } 50% { box-shadow: 0 0 18px rgba(124,156,255,0.85); } }
+#visionBtn.busy { animation: jarvisSpin 0.9s linear infinite; }

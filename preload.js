@@ -5,6 +5,7 @@ const EVENTS = ['listening', 'transcript', 'manager', 'route', 'agent', 'delta',
 
 contextBridge.exposeInMainWorld('nexus', {
   ask: (text) => ipcRenderer.invoke('orch:ask', text),
+  askVision: (text, image) => ipcRenderer.invoke('orch:askVision', { text, image }),
   on: (evt, cb) => { if (EVENTS.includes(evt)) ipcRenderer.on('orch:' + evt, (_e, payload) => cb(payload)); },
   stopSpeaking: () => ipcRenderer.send('buddy:stopSpeaking'),
   hasKey: () => ipcRenderer.invoke('key:has'),
