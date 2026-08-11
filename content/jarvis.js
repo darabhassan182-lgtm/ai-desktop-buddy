@@ -180,30 +180,57 @@
     else { try { nx.stopSpeaking && nx.stopSpeaking(); } catch (e) {} try { nx.ask(cmd); } catch (e) {} }
   }
 
-  /* ---------- vision: capture the screen, ask Sea ---------- */
+  /* ---------- vision: keep the screen open, grab frames on demand ---------- */
+  var visionStream = null, visionVideo = null, visionOn = false;
+
+  function startVision() {
+    if (visionOn && visionVideo) return Promise.resolve(true);
+    return navigator.mediaDevices.getDisplayMedia({ video: { width: 1280 }, audio: false }).then(function (stream) {
+      visionStream = stream; visionOn = true;
+      visionVideo = document.createElement('video'); visionVideo.srcObject = stream; visionVideo.muted = true;
+      // If the user stops the share via macOS, reflect that in the app.
+      try { stream.getVideoTracks().forEach(function (t) { t.onended = function () { stopVision(); toast('Screen vision off.'); }; }); } catch (e) {}
+      var vb = $('visionBtn'); if (vb) vb.classList.add('active');
+      return visionVideo.play().then(function () { return true; }).catch(function () { return true; });
+    }).catch(function () {
+      visionOn = false; var vb = $('visionBtn'); if (vb) vb.classList.remove('active');
+      toast('Screen capture was blocked or cancelled.'); return false;
+    });
+  }
+  function stopVision() {
+    visionOn = false;
+    try { visionStream && visionStream.getTracks().forEach(function (t) { t.stop(); }); } catch (e) {}
+    visionStream = null; visionVideo = null;
+    var vb = $('visionBtn'); if (vb) { vb.classList.remove('active'); vb.classList.remove('busy'); }
+  }
+  function grabFrame() {
+    if (!visionVideo) return null;
+    var w = visionVideo.videoWidth || 0, h = visionVideo.videoHeight || 0;
+    if (!w || !h) return null;
+    var scale = Math.min(1, 1280 / w), cw = Math.round(w * scale), ch = Math.round(h * scale);
+    var cv = document.createElement('canvas'); cv.width = cw; cv.height = ch;
+    try { cv.getContext('2d').drawImage(visionVideo, 0, 0, cw, ch); return cv.toDataURL('image/jpeg', 0.7); }
+    catch (e) { return null; }
+  }
   function askVision(prompt) {
     if (!nx.askVision) { toast('Reinstall the app to enable vision.'); return; }
-    var vb = $('visionBtn'); if (vb) vb.classList.add('busy');
-    navigator.mediaDevices.getDisplayMedia({ video: { width: 1280 }, audio: false }).then(function (stream) {
-      var video = document.createElement('video'); video.srcObject = stream; video.muted = true;
-      video.play().then(function () {
-        setTimeout(function () {
-          try {
-            var w = video.videoWidth || 1280, h = video.videoHeight || 720;
-            var scale = Math.min(1, 1280 / w), cw = Math.round(w * scale), ch = Math.round(h * scale);
-            var cv = document.createElement('canvas'); cv.width = cw; cv.height = ch;
-            cv.getContext('2d').drawImage(video, 0, 0, cw, ch);
-            var data = cv.toDataURL('image/jpeg', 0.7);
-            stream.getTracks().forEach(function (t) { t.stop(); });
-            if (vb) vb.classList.remove('busy');
-            nx.askVision(prompt || 'What do you see on my screen?', data);
-          } catch (e) { cleanup(stream, vb); toast('Vision failed: ' + ((e && e.message) || e)); }
-        }, 280);
-      }).catch(function () { cleanup(stream, vb); });
-    }).catch(function () { if (vb) vb.classList.remove('busy'); toast('Screen capture cancelled.'); });
+    var vb = $('visionBtn');
+    var run = (visionOn && visionVideo) ? Promise.resolve(true) : startVision();
+    run.then(function (ok) {
+      if (!ok) return;
+      if (vb) vb.classList.add('busy');
+      setTimeout(function () {
+        var data = grabFrame();
+        if (vb) vb.classList.remove('busy');
+        if (!data) { toast('Could not read the screen — try again.'); return; }
+        nx.askVision(prompt || 'What do you see on my screen?', data);
+      }, 220);   // let a just-opened stream paint its first frame
+    });
   }
-  function cleanup(stream, vb) { try { stream.getTracks().forEach(function (t) { t.stop(); }); } catch (e) {} if (vb) vb.classList.remove('busy'); }
 
   var jbtn = $('jarvisBtn'); if (jbtn) jbtn.addEventListener('click', toggleHandsFree);
-  var vbtn = $('visionBtn'); if (vbtn) vbtn.addEventListener('click', function () { askVision('What do you see on my screen?'); });
+  var vbtn = $('visionBtn'); if (vbtn) vbtn.addEventListener('click', function () {
+    if (visionOn) { stopVision(); toast('Screen vision off.'); }
+    else { askVision('What do you see on my screen?'); }   // opens the share (stays on) + asks
+  });
 })();
