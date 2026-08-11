@@ -7,6 +7,7 @@ const { execFile } = require('child_process');
 
 require('dotenv').config({ path: path.join(__dirname, '.env') });
 const Anthropic = require('@anthropic-ai/sdk');
+const nodemailer = require('nodemailer');
 
 let mainWindow;
 let client = null;
@@ -34,6 +35,7 @@ const DIRECTOR_SYSTEM = `You are Agent Sea, the Director of an AI studio. You ha
 - api (Wire): API calls and automation tasks
 You also have a long-term MEMORY. Use the \`remember\` tool whenever the user shares durable information (their name, company, preferences, a repeatable process/workflow) so you can act faster next time; use \`forget\` to remove an outdated item by id. Never re-ask for something already in MEMORY, and never ask for a stored credential's value.
 You control the user's HOLOGRAPHIC DISPLAY with the \`show\` tool. Be visual, like Jarvis: whenever a place, city, country, or landmark comes up, call \`show\` with kind 'map' and that place so the map flies to it on screen; when a short summary, list, or set of facts would help, call \`show\` with kind 'info'. Do this proactively and in ADDITION to speaking.
+You can SEND EMAIL from the user's connected Gmail with the \`send_email\` tool. Workflow: draft the email (delegate to Echo if helpful), then READ BACK the recipient, subject, and a short summary of the body and ask "shall I send it?"; only after the user clearly confirms, call \`send_email\`. Never send without that confirmation. If sending fails because Gmail isn't connected, tell them to click the 📧 button to connect Gmail.
 You are calm, refined, and efficient — like Jarvis from Iron Man. For each request, delegate to the right specialist(s) when needed (you may delegate more than once); for simple things, answer directly. Reply with a VERY brief spoken answer — ideally one sentence, at most two — natural and composed, no markdown, no bullet points, no URLs (it is read aloud). Address the user directly.`;
 
 const DELEGATE_TOOL = {
@@ -81,7 +83,35 @@ const SHOW_TOOL = {
     required: ['kind'],
   },
 };
-const DIRECTOR_TOOLS = [DELEGATE_TOOL, REMEMBER_TOOL, FORGET_TOOL, SHOW_TOOL];
+const SEND_EMAIL_TOOL = {
+  name: 'send_email',
+  description: "Send an email from the user's connected Gmail. ONLY call this AFTER you have read back the recipient, subject, and body to the user and they clearly said yes. Never send without that explicit confirmation. If Gmail isn't connected, tell the user to connect it with the 📧 button.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      to: { type: 'string', description: 'Recipient email address.' },
+      subject: { type: 'string', description: 'Subject line.' },
+      body: { type: 'string', description: 'Plain-text body of the email.' },
+    },
+    required: ['to', 'subject', 'body'],
+  },
+};
+const DIRECTOR_TOOLS = [DELEGATE_TOOL, REMEMBER_TOOL, FORGET_TOOL, SHOW_TOOL, SEND_EMAIL_TOOL];
+
+// --- Gmail sending (SMTP + App Password via nodemailer) ---------------------
+function gmailConfig() { const c = loadConfig(); return { user: c.gmailUser || '', pass: c.gmailAppPass || '' }; }
+async function sendGmail(to, subject, body) {
+  const g = gmailConfig();
+  if (!g.user || !g.pass) throw new Error('Gmail not connected');
+  const transporter = nodemailer.createTransport({
+    host: 'smtp.gmail.com', port: 465, secure: true,
+    auth: { user: g.user, pass: g.pass.replace(/\s+/g, '') },
+  });
+  const info = await transporter.sendMail({
+    from: g.user, to: String(to || ''), subject: String(subject || '(no subject)'), text: String(body || ''),
+  });
+  return (info && info.messageId) ? info.messageId : 'sent';
+}
 
 // --- Config / API key -------------------------------------------------------
 function configPath() { return path.join(app.getPath('userData'), 'config.json'); }
@@ -251,7 +281,7 @@ function cmpVersions(a, b) {
   for (let i = 0; i < 3; i++) { const d = (pa[i] || 0) - (pb[i] || 0); if (d) return d > 0 ? 1 : -1; }
   return 0;
 }
-const CONTENT_FILES = ['index.html', 'styles.css', 'renderer.js', 'voice.js', 'game.js', 'memory.js', 'memory.css', 'jarvis.js', 'jarvis.css', 'display.js', 'display.css', 'voice-ui.js', 'voiceid.js', 'leaflet.js', 'leaflet.css', 'manifest.json'];
+const CONTENT_FILES = ['index.html', 'styles.css', 'renderer.js', 'voice.js', 'game.js', 'memory.js', 'memory.css', 'jarvis.js', 'jarvis.css', 'display.js', 'display.css', 'voice-ui.js', 'voiceid.js', 'gmail-ui.js', 'leaflet.js', 'leaflet.css', 'manifest.json'];
 function syncBundledContent() {
   const src = bundledContentDir(), dst = userContentDir();
   const bundled = readManifest(src), user = readManifest(dst);
@@ -301,6 +331,24 @@ ipcMain.handle('key:save', (_e, key) => {
   client = new Anthropic({ apiKey: t }); return true;
 });
 ipcMain.handle('app:contentVersion', () => readManifest(activeContentDir()).version);
+
+// --- Gmail connect IPC ------------------------------------------------------
+ipcMain.handle('gmail:get', () => { const g = gmailConfig(); return { connected: !!(g.user && g.pass), user: g.user }; });
+ipcMain.handle('gmail:set', (_e, user, pass) => {
+  const c = loadConfig();
+  const u = String(user || '').trim();
+  const p = String(pass || '').replace(/\s+/g, '');
+  if (u) c.gmailUser = u; else delete c.gmailUser;
+  if (p) c.gmailAppPass = p; else delete c.gmailAppPass;
+  saveConfig(c);
+  return { ok: true, connected: !!(c.gmailUser && c.gmailAppPass) };
+});
+ipcMain.handle('gmail:test', async () => {
+  const g = gmailConfig();
+  if (!g.user || !g.pass) return { ok: false, error: 'Not connected.' };
+  try { const id = await sendGmail(g.user, 'Nexus test ✓', 'This is a test from Agent Sea — email sending works.'); return { ok: true, id }; }
+  catch (e) { return { ok: false, error: (e && e.message) || String(e) }; }
+});
 ipcMain.handle('update:check', async () => {
   const local = readManifest(activeContentDir());
   try {
@@ -600,6 +648,20 @@ ipcMain.handle('orch:ask', async (event, text) => {
               zoom: (typeof inp.zoom === 'number' && isFinite(inp.zoom)) ? Math.max(2, Math.min(18, inp.zoom)) : null,
             });
             results[idx] = { type: 'tool_result', tool_use_id: tu.id, content: 'Displayed on the holographic HUD.' };
+          } else if (tu.name === 'send_email') {
+            emit('agent', { agentId: 'inbox', state: 'working' });
+            jobs.push((async () => {
+              try {
+                const id = await sendGmail(inp.to, inp.subject, inp.body);
+                emit('notice', { text: 'Email sent to ' + inp.to });
+                emit('agent', { agentId: 'inbox', state: 'done' });
+                results[idx] = { type: 'tool_result', tool_use_id: tu.id, content: 'Email sent to ' + inp.to + ' (' + id + ').' };
+              } catch (e) {
+                const msg = (e && e.message) || String(e);
+                emit('agent', { agentId: 'inbox', state: 'idle' });
+                results[idx] = { type: 'tool_result', tool_use_id: tu.id, content: 'Could not send: ' + msg + (/not connected/i.test(msg) ? ' — tell the user to click the 📧 button to connect Gmail.' : ''), is_error: true };
+              }
+            })());
           } else if (tu.name === 'delegate' && SUBAGENTS[inp.agent]) {
             const agentId = inp.agent;
             emit('route', { agentId, task: inp.task || '', reason: inp.reason || '' });

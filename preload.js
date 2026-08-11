@@ -23,6 +23,12 @@ contextBridge.exposeInMainWorld('nexus', {
     deleteSecret: (name) => ipcRenderer.invoke('memory:deleteSecret', name),
     encAvailable: () => ipcRenderer.invoke('memory:encAvailable'),
   },
+  // Gmail sending (App Password stored locally; never returned in full)
+  gmail: {
+    get: () => ipcRenderer.invoke('gmail:get'),
+    set: (user, pass) => ipcRenderer.invoke('gmail:set', user, pass),
+    test: () => ipcRenderer.invoke('gmail:test'),
+  },
   // Voice (ElevenLabs cinematic TTS): key never returned to the renderer
   voice: {
     get: () => ipcRenderer.invoke('voice:get'),

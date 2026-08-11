@@ -3,3 +3,9 @@ dist/
 .env
 .DS_Store
 assets_src/
+
+# Google/OAuth + token secrets — never commit
+client_secret*.json
+*.apps.googleusercontent.com.json
+token.json
+credentials.json

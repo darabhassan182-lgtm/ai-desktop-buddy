@@ -26,6 +26,7 @@
       <button id="jarvisBtn" class="ghost-btn" type="button" title="Hands-free — say &quot;Sea, …&quot;" aria-label="Hands-free">🎧</button>
       <button id="visionBtn" class="ghost-btn" type="button" title="Let Sea see your screen" aria-label="Vision">👁️</button>
       <button id="voiceBtn" class="ghost-btn" type="button" title="Sea's voice" aria-label="Voice settings">🔊</button>
+      <button id="gmailBtn" class="ghost-btn" type="button" title="Connect Gmail (let Echo send email)" aria-label="Connect Gmail">📧</button>
       <button id="memoryBtn" class="ghost-btn" type="button" title="Memory" aria-label="Memory">🧠</button>
       <button id="updateBtn" class="ghost-btn" type="button" title="Check for updates" aria-label="Check for updates">⟳</button>
       <button id="settingsBtn" class="ghost-btn" type="button" title="Settings" aria-label="Settings">⚙️</button>
@@ -101,6 +102,25 @@
     </div>
   </div>
 
+  <!-- Connect Gmail modal -->
+  <div id="gmailModal" aria-hidden="true">
+    <div class="setup-card voice-card" role="dialog" aria-modal="true" aria-labelledby="gmailHeading">
+      <div class="setup-mark" aria-hidden="true">📧</div>
+      <h1 id="gmailHeading">Connect Gmail</h1>
+      <p class="setup-sub">So Sea can send email on your behalf. Uses a Google <b>App Password</b> — no Google Cloud setup.</p>
+      <label class="voice-label" for="gmailUser">Your Gmail address</label>
+      <input id="gmailUser" type="email" autocomplete="off" spellcheck="false" placeholder="you@gmail.com" />
+      <label class="voice-label" for="gmailPass">App Password (16 letters)</label>
+      <input id="gmailPass" type="password" autocomplete="off" spellcheck="false" placeholder="e.g. abcd efgh ijkl mnop" />
+      <div id="gmailState" class="voice-state"></div>
+      <div class="voice-actions">
+        <button id="gmailTest" type="button" class="voice-btn-secondary">✉️ Send test</button>
+        <button id="gmailDone" type="button">Save</button>
+      </div>
+      <p class="voice-foot">Get an App Password: Google Account → Security → 2-Step Verification (on) → App passwords. Stored only on this Mac.</p>
+    </div>
+  </div>
+
   <!-- Transient toast -->
   <div id="toast" role="status" aria-live="polite"></div>
 
@@ -142,6 +162,7 @@
   <script src="memory.js"></script>
   <script src="voiceid.js"></script>
   <script src="voice-ui.js"></script>
+  <script src="gmail-ui.js"></script>
   <script src="jarvis.js"></script>
 </body>
 </html>
