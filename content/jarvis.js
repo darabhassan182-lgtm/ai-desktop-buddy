@@ -104,11 +104,9 @@
     return hw.length >= 3 && (common / hw.length) >= 0.6;          // strong word overlap
   }
 
-  // Conversation mode: say "Sea" once → awake for follow-ups (no wake word) until idle.
-  var AWAKE_MS = 30000, awakeUntil = 0;
-  function isAwake() { return Date.now() < awakeUntil; }
-  function keepAwake() { awakeUntil = Date.now() + AWAKE_MS; }
-  function sleep() { awakeUntil = 0; }
+  // Hands-free responds to EVERYTHING you say — no wake word needed. Saying
+  // "go to sleep" makes it doze (needs "Sea" to wake); turning 🎧 off stops it.
+  var dormant = false;
 
   function stripWake(text) {
     var t = String(text || '').trim().replace(/^[,.\s"']+/, '');
@@ -141,15 +139,15 @@
   function startHandsFree() {
     if (!window.NexusVoice || !window.NexusVoice.transcribe) { toast('Voice engine still loading — try again in a moment.'); return; }
     navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: false } }).then(function (stream) {
-      loopStream = stream; listening = true; sleep();
+      loopStream = stream; listening = true; dormant = false;
       var btn = $('jarvisBtn'); if (btn) btn.classList.add('active');
       W('setListening', true); startMeter(loopStream);
       try { if (window.NexusVoiceID && window.NexusVoiceID.isEnabled()) window.NexusVoiceID.warmup(); } catch (e) {}
-      toast('Hands-free on — say “Sea”, then just keep talking.');
+      toast('Hands-free on — just talk, no wake word needed.');
     }).catch(function () { toast('Microphone blocked — allow it in System Settings → Privacy → Microphone.'); });
   }
   function stopHandsFree() {
-    listening = false; sleep();
+    listening = false; dormant = false;
     var btn = $('jarvisBtn'); if (btn) btn.classList.remove('active');
     endCapture(true);
     try { loopStream && loopStream.getTracks().forEach(function (t) { t.stop(); }); } catch (e) {}
@@ -165,7 +163,7 @@
   function doStop() {
     try { nx.stopSpeaking && nx.stopSpeaking(); } catch (e) {}
     W('setManager', 'idle');
-    keepAwake();                 // stay in the conversation so a new command can follow
+    dormant = false;             // stay ready so a new command can follow
     toast('Stopped.');
   }
 
@@ -205,20 +203,18 @@
     var raw = String(text || '').trim();
     if (!raw) return;
     if (looksLikeEcho(raw)) { clearCue(); return; }   // Sea hearing itself → ignore, don't reply/loop
-    // Sleep phrases end the conversation → require "Sea" again.
-    if (isAwake() && /\b(go to sleep|stop listening|that'?s all|that is all|never mind|stand down|dismiss)\b/i.test(raw)) {
-      sleep(); clearCue(); toast('Standing by — say “Sea” to wake me.'); return;
+    var stripped = stripWake(raw);                     // remove an optional leading "Sea"
+    // "Go to sleep" → doze until you say "Sea" again (keeps 🎧 on but ignores chatter).
+    if (/\b(go to sleep|stop listening|go dormant|stand down|dismiss)\b/i.test(raw)) {
+      dormant = true; clearCue(); toast('Dozing — say “Sea” to wake me.'); return;
     }
-    var cmd;
-    if (isAwake()) {
-      var s = stripWake(raw); cmd = (s !== null) ? s : raw;   // wake word optional while awake
-    } else {
-      cmd = stripWake(raw);
-      if (cmd === null) { clearCue(); return; }               // not addressed to Sea
+    if (dormant) {
+      if (stripped === null) { clearCue(); return; }   // dozing: only "Sea …" wakes it
+      dormant = false;
     }
-    keepAwake();
-    if (!cmd) { toast('Yes?'); return; }                     // just "Sea" → wait for the command
-    if (isStop(cmd)) { doStop(); return; }                   // "Sea, stop" with nothing playing is harmless
+    var cmd = (stripped !== null) ? stripped : raw;    // wake word OPTIONAL — just talk
+    if (!cmd) { toast('Yes?'); return; }               // said only "Sea"
+    if (isStop(cmd)) { doStop(); return; }
     var sub = $('subtitle'); if (sub) { sub.textContent = cmd; sub.classList.add('show'); }
     if (/\b(screen|see this|look at|on my screen|what'?s on|read this)\b/i.test(cmd)) askVision(cmd);
     else { try { nx.stopSpeaking && nx.stopSpeaking(); } catch (e) {} try { nx.ask(cmd); } catch (e) {} }
