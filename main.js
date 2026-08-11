@@ -208,7 +208,7 @@ function cmpVersions(a, b) {
   for (let i = 0; i < 3; i++) { const d = (pa[i] || 0) - (pb[i] || 0); if (d) return d > 0 ? 1 : -1; }
   return 0;
 }
-const CONTENT_FILES = ['index.html', 'styles.css', 'renderer.js', 'voice.js', 'game.js', 'memory.js', 'memory.css', 'tiles.js', 'manifest.json'];
+const CONTENT_FILES = ['index.html', 'styles.css', 'renderer.js', 'voice.js', 'game.js', 'memory.js', 'memory.css', 'three.bundle.js', 'manifest.json'];
 function syncBundledContent() {
   const src = bundledContentDir(), dst = userContentDir();
   const bundled = readManifest(src), user = readManifest(dst);
