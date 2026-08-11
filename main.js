@@ -336,7 +336,20 @@ function trimConversation() {
   while (conversation.length > 2 && total > CONV_MAX_CHARS) { total -= conversation[0].content.length; conversation.shift(); }
   while (conversation.length && conversation[0].role !== 'user') conversation.shift(); // history must start on a user turn
 }
-function priorMessages() { return conversation.map((m) => ({ role: m.role, content: m.content })); }
+// Only the RECENT slice of the conversation is sent to the model — the full
+// history is still kept on disk, but re-sending all of it every turn is what
+// makes each reply cost more. This caps the per-request context to save credits.
+const SEND_MAX_MESSAGES = 24, SEND_MAX_CHARS = 14000;
+function priorMessages() {
+  let msgs = conversation.slice(-SEND_MAX_MESSAGES);
+  let total = 0; for (const m of msgs) total += m.content.length;
+  while (msgs.length > 2 && total > SEND_MAX_CHARS) { total -= msgs[0].content.length; msgs = msgs.slice(1); }
+  while (msgs.length && msgs[0].role !== 'user') msgs = msgs.slice(1);
+  return msgs.map((m) => ({ role: m.role, content: m.content }));
+}
+// Sea's "brain" model — configurable so it can be dialed for cost vs smarts.
+function directorModel() { return loadConfig().directorModel || 'claude-opus-4-8'; }
+function cachedSystem(text) { return [{ type: 'text', text: String(text || ''), cache_control: { type: 'ephemeral' } }]; }
 function recordExchange(userText, assistantText) {
   conversation.push({ role: 'user', content: String(userText || '') }, { role: 'assistant', content: String(assistantText || '(no reply)') });
   trimConversation(); saveConversation();
@@ -437,7 +450,7 @@ ipcMain.handle('orch:briefing', async (event) => {
   let finalText = '';
   try {
     for (let turn = 0; turn < 6; turn++) {
-      const stream = client.messages.stream({ model: 'claude-opus-4-8', max_tokens: 1500, system: sys, tools: [GMAIL_SEARCH_TOOL, GMAIL_READ_TOOL], messages });
+      const stream = client.messages.stream({ model: directorModel(), max_tokens: 1500, system: cachedSystem(sys), tools: [GMAIL_SEARCH_TOOL, GMAIL_READ_TOOL], messages });
       const msg = await stream.finalMessage();
       messages.push({ role: 'assistant', content: msg.content });
       const toolUses = msg.content.filter((b) => b.type === 'tool_use');
@@ -659,7 +672,7 @@ ipcMain.handle('orch:askVision', async (event, payload) => {
   emit('manager', { state: 'thinking' });
   try {
     const stream = client.messages.stream({
-      model: 'claude-opus-4-8', max_tokens: 1024,
+      model: directorModel(), max_tokens: 1024,
       system: 'You are Agent Sea, a calm, refined Jarvis-like assistant. Look at the image and answer the user in ONE or two short spoken sentences — no markdown, no lists, no URLs.',
       messages: priorMessages().concat([{ role: 'user', content: [
         { type: 'image', source: { type: 'base64', media_type: m[1], data: m[2] } },
@@ -737,7 +750,7 @@ ipcMain.handle('orch:ask', async (event, text) => {
   try {
     for (let turn = 0; turn < 8; turn++) {
       const stream = client.messages.stream({
-        model: 'claude-opus-4-8', max_tokens: 1024, system, tools: DIRECTOR_TOOLS, messages,
+        model: directorModel(), max_tokens: 1024, system: cachedSystem(system), tools: DIRECTOR_TOOLS, messages,
       });
       const msg = await stream.finalMessage();
       messages.push({ role: 'assistant', content: msg.content });
