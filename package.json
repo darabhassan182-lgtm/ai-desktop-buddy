@@ -9,8 +9,8 @@
   },
   "license": "MIT",
   "build": {
-    "appId": "com.scout.desktopbuddy",
-    "productName": "Scout",
+    "appId": "com.nexus.desktopbuddy",
+    "productName": "Nexus",
     "files": [
       "main.js",
       "preload.js",
@@ -25,7 +25,7 @@
       }
     },
     "dmg": {
-      "title": "Scout"
+      "title": "Nexus"
     }
   },
   "dependencies": {
