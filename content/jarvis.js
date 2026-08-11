@@ -12,8 +12,12 @@
     clearTimeout(toast._t); toast._t = setTimeout(function () { t.classList.remove('show'); }, 3200);
   }
 
-  /* ---------- mic meter → HUD core ---------- */
-  var audioCtx = null, analyser = null, freqData = null, rafId = 0, windowPeak = 0;
+  /* ---------- mic level + voice-activity detection (VAD) ---------- */
+  var audioCtx = null, analyser = null, freqData = null, rafId = 0;
+  // VAD thresholds (amp is 0..1). Tuned for close talking.
+  var START_AMP = 0.075, SILENCE_AMP = 0.05, SILENCE_HANG = 750, MIN_UTTER = 350, MAX_UTTER = 12000;
+  var capturing = false, captureStart = 0, silenceStart = 0, aborted = false;
+
   function startMeter(stream) {
     try {
       audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -29,13 +33,28 @@
     analyser.getByteFrequencyData(freqData);
     var sum = 0; for (var i = 0; i < freqData.length; i++) sum += freqData[i];
     var amp = sum / freqData.length / 255;
-    if (amp > windowPeak) windowPeak = amp;      // track loudest moment this window
     W('setLevel', amp);
+    handleVAD(amp);
   }
   function stopMeter() { if (rafId) cancelAnimationFrame(rafId); rafId = 0; try { audioCtx && audioCtx.close(); } catch (e) {} audioCtx = null; analyser = null; W('setLevel', 0); }
 
-  /* ---------- hands-free wake word ---------- */
-  var listening = false, rec = null, recording = false, chunks = [], loopStream = null;
+  // Detect an utterance: start when you begin talking, stop after a short pause.
+  function handleVAD(amp) {
+    if (!listening) return;
+    var now = Date.now();
+    if (seaBusy()) { if (capturing) endCapture(true); return; }  // don't hear Sea's own voice
+    if (!capturing) {
+      if (amp >= START_AMP) beginCapture();
+    } else {
+      if (amp >= SILENCE_AMP) silenceStart = 0;
+      else if (!silenceStart) silenceStart = now;
+      var dur = now - captureStart, sil = silenceStart ? now - silenceStart : 0;
+      if ((sil >= SILENCE_HANG && dur >= MIN_UTTER) || dur >= MAX_UTTER) endCapture(false);
+    }
+  }
+
+  /* ---------- hands-free engine ---------- */
+  var listening = false, rec = null, chunks = [], loopStream = null;
 
   // While Sea is speaking, DON'T listen — otherwise its own voice loops back
   // through the mic and it interrupts itself. Resume shortly after it finishes.
@@ -48,54 +67,75 @@
     });
   } catch (e) {}
   function seaBusy() { return seaSpeaking || Date.now() < speakCooldownUntil; }
+
+  // Conversation mode: say "Sea" once → awake for follow-ups (no wake word) until idle.
+  var AWAKE_MS = 30000, awakeUntil = 0;
+  function isAwake() { return Date.now() < awakeUntil; }
+  function keepAwake() { awakeUntil = Date.now() + AWAKE_MS; }
+  function sleep() { awakeUntil = 0; }
+
   function stripWake(text) {
     var t = String(text || '').trim().replace(/^[,.\s"']+/, '');
-    var m = /^(hey\s+|ok\s+)?(sea|jarvis|cea|see)\b[\s,.:!?-]*/i.exec(t);
+    var m = /^(hey\s+|ok\s+|okay\s+)?(sea|jarvis|cea|see|sia|c)\b[\s,.:!?-]*/i.exec(t);
     if (!m) return null;
     return t.slice(m[0].length).trim();
   }
+
+  function beginCapture() {
+    if (!loopStream) return;
+    try { rec = new MediaRecorder(loopStream); } catch (e) { return; }
+    chunks = []; aborted = false; capturing = true; captureStart = Date.now(); silenceStart = 0;
+    rec.ondataavailable = function (e) { if (e.data && e.data.size) chunks.push(e.data); };
+    rec.onstop = function () {
+      capturing = false;
+      if (aborted || !listening) return;
+      var blob = new Blob(chunks, { type: (rec && rec.mimeType) || 'audio/webm' });
+      if (!blob.size) return;
+      Promise.resolve(window.NexusVoice.transcribe(blob)).then(function (text) {
+        if (text) handleHeard(text);
+      }).catch(function () {});
+    };
+    try { rec.start(); } catch (e) { capturing = false; }
+  }
+  function endCapture(discard) {
+    aborted = !!discard;
+    try { if (rec && rec.state !== 'inactive') rec.stop(); } catch (e) { capturing = false; }
+  }
+
   function toggleHandsFree() { if (listening) stopHandsFree(); else startHandsFree(); }
   function startHandsFree() {
     if (!window.NexusVoice || !window.NexusVoice.transcribe) { toast('Voice engine still loading — try again in a moment.'); return; }
-    navigator.mediaDevices.getUserMedia({ audio: true }).then(function (stream) {
-      loopStream = stream; listening = true;
+    navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } }).then(function (stream) {
+      loopStream = stream; listening = true; sleep();
       var btn = $('jarvisBtn'); if (btn) btn.classList.add('active');
       W('setListening', true); startMeter(loopStream);
-      toast('Hands-free on — say “Sea, …”');
-      try { window.NexusVoice.warmup && window.NexusVoice.warmup(); } catch (e) {}
-      listenLoop();
+      toast('Hands-free on — say “Sea”, then just keep talking.');
     }).catch(function () { toast('Microphone blocked — allow it in System Settings → Privacy → Microphone.'); });
   }
   function stopHandsFree() {
-    listening = false;
+    listening = false; sleep();
     var btn = $('jarvisBtn'); if (btn) btn.classList.remove('active');
-    try { if (rec && recording) { recording = false; rec.stop(); } } catch (e) {}
+    endCapture(true);
     try { loopStream && loopStream.getTracks().forEach(function (t) { t.stop(); }); } catch (e) {}
     loopStream = null; stopMeter(); W('setListening', false);
   }
-  function listenLoop() {
-    if (!listening || !loopStream) return;
-    chunks = []; windowPeak = 0;
-    try { rec = new MediaRecorder(loopStream); } catch (e) { stopHandsFree(); return; }
-    rec.ondataavailable = function (e) { if (e.data && e.data.size) chunks.push(e.data); };
-    rec.onstop = function () {
-      if (!listening) return;
-      // Ignore anything captured while Sea is speaking (its own voice) — no self-interrupt.
-      if (seaBusy()) { if (listening) listenLoop(); return; }
-      // Skip silent windows — don't spend a cloud transcription on background noise.
-      if (windowPeak < 0.045) { if (listening) listenLoop(); return; }
-      var blob = new Blob(chunks, { type: (rec && rec.mimeType) || 'audio/webm' });
-      Promise.resolve(window.NexusVoice.transcribe(blob)).then(function (text) {
-        if (text) handleHeard(text);
-      }).catch(function () {}).then(function () { if (listening) listenLoop(); });
-    };
-    recording = true; rec.start();
-    setTimeout(function () { try { if (rec && recording) { recording = false; rec.stop(); } } catch (e) {} }, 5000);
-  }
+
   function handleHeard(text) {
-    var cmd = stripWake(text);
-    if (cmd === null) return;
-    if (!cmd) { toast('Yes? — say “Sea, …”'); return; }
+    var raw = String(text || '').trim();
+    if (!raw) return;
+    // Sleep phrases end the conversation → require "Sea" again.
+    if (isAwake() && /\b(go to sleep|stop listening|that'?s all|that is all|never mind|stand down|dismiss)\b/i.test(raw)) {
+      sleep(); toast('Standing by — say “Sea” to wake me.'); return;
+    }
+    var cmd;
+    if (isAwake()) {
+      var s = stripWake(raw); cmd = (s !== null) ? s : raw;   // wake word optional while awake
+    } else {
+      cmd = stripWake(raw);
+      if (cmd === null) return;                               // not addressed to Sea
+    }
+    keepAwake();
+    if (!cmd) { toast('Yes?'); return; }                     // just "Sea" → wait for the command
     var sub = $('subtitle'); if (sub) { sub.textContent = cmd; sub.classList.add('show'); }
     if (/\b(screen|see this|look at|on my screen|what'?s on|read this)\b/i.test(cmd)) askVision(cmd);
     else { try { nx.stopSpeaking && nx.stopSpeaking(); } catch (e) {} try { nx.ask(cmd); } catch (e) {} }
