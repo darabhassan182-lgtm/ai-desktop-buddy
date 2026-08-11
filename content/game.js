@@ -776,7 +776,10 @@
     var ud = g.userData; if (ud.built) return;
     var A = AGENTS[id], isMgr = (id === 'manager');
 
-    var clone = SkeletonUtils.clone(gltf.scene);
+    // These blocky models are NON-skinned node rigs, and each agent has its OWN parsed
+    // model — use gltf.scene directly so the AnimationMixer binds its clips to the real
+    // nodes (SkeletonUtils.clone is for skinned meshes and mis-binds these → frozen).
+    var clone = gltf.scene;
     ud.bodyMats = [];
     clone.traverse(function (o) {
       if (o && (o.isMesh || o.isSkinnedMesh)) {
@@ -1279,18 +1282,18 @@
   /* ==========================================================
      18. MAIN LOOP
      ========================================================== */
+  var _tickErr = false;
+  function _logTick(e) { if (_tickErr) return; _tickErr = true; try { console.error('[World] tick error (logged once):', e); } catch (_) {} }
   function tick() {
-    try {
-      var dt = Math.min(clock.getDelta(), 0.05); time += dt;
-      updateCameraTween(dt);
-      controls.update();
-      for (var i = 0; i < IDS.length; i++) updateAgent(IDS[i], dt);
-      updateManager(dt);
-      updateOrbs(dt); updateRings(dt); updateChecks(dt);
-      updateSparks(dt); updateMotes(dt);
-      updateFixtures(dt);
-      composer.render();
-    } catch (e) { /* never break the loop */ }
+    // Each step isolated so one bad agent can never skip the render (→ frozen scene).
+    var dt = 0.016;
+    try { dt = Math.min(clock.getDelta(), 0.05); time += dt; } catch (e) {}
+    try { updateCameraTween(dt); } catch (e) { _logTick(e); }
+    try { controls.update(); } catch (e) {}
+    for (var i = 0; i < IDS.length; i++) { try { updateAgent(IDS[i], dt); } catch (e) { _logTick(e); } }
+    try { updateManager(dt); } catch (e) { _logTick(e); }
+    try { updateOrbs(dt); updateRings(dt); updateChecks(dt); updateSparks(dt); updateMotes(dt); updateFixtures(dt); } catch (e) { _logTick(e); }
+    try { composer.render(); } catch (e) { _logTick(e); }
   }
 
   /* ==========================================================
