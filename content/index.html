@@ -38,9 +38,6 @@
   <!-- Transcript subtitle -->
   <div id="subtitle" aria-live="polite"></div>
 
-  <!-- Jarvis HUD orb -->
-  <div id="jarvisOrb" class="jarvis-orb idle"><div id="jarvisOrbCore"></div></div>
-
   <!-- Floating glass command bar -->
   <div id="commandBar" role="group" aria-label="Ask the Director">
     <input id="command" type="text" autocomplete="off" spellcheck="false"
@@ -54,7 +51,7 @@
     <div class="setup-card" role="dialog" aria-modal="true" aria-labelledby="setupHeading">
       <div class="setup-mark" aria-hidden="true">✦</div>
       <h1 id="setupHeading">Welcome to Nexus</h1>
-      <p class="setup-sub">Add your API key to wake the office.</p>
+      <p class="setup-sub">Add your API key to bring Agent Sea online.</p>
       <input id="keyInput" type="password" autocomplete="off" spellcheck="false"
              placeholder="Paste your API key" aria-label="API key" />
       <div id="keyError" role="alert"></div>
@@ -96,8 +93,6 @@
   </aside>
 
   <script type="module" src="voice.js"></script>
-  <script src="three.bundle.js"></script>
-  <script src="character-model.js"></script>
   <script src="game.js"></script>
   <script src="renderer.js"></script>
   <script src="memory.js"></script>
