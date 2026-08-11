@@ -374,10 +374,23 @@ function speakSay(clean, gen, onDone) {
   });
 }
 
-async function speakEleven(clean, cfg, gen, onDone) {
+async function speakEleven(clean, cfg, gen, onDone, attempt) {
+  attempt = attempt || 0;
   const voice = cfg.elevenVoice || DEFAULT_ELEVEN_VOICE;
   const model = cfg.elevenModel || DEFAULT_ELEVEN_MODEL;
   const ac = new AbortController(); ttsAbort = ac;
+  // Retry transient failures (429 rate-limit / 5xx / network) before falling back to the
+  // system voice, so a brief overload doesn't switch Sea to the macOS voice.
+  const retryOrFallback = (retriable, why) => {
+    ttsAbort = null;
+    if (gen !== speakGen) return;
+    if (retriable && attempt < 2) {
+      setTimeout(() => { if (gen === speakGen) speakEleven(clean, cfg, gen, onDone, attempt + 1); }, 350 + attempt * 450);
+      return;
+    }
+    try { console.warn('[TTS] ElevenLabs failed (' + why + '), using system voice.'); } catch (_) {}
+    speakSay(clean, gen, onDone);
+  };
   try {
     const res = await fetch('https://api.elevenlabs.io/v1/text-to-speech/' + voice + '?output_format=mp3_44100_128', {
       method: 'POST',
@@ -388,19 +401,22 @@ async function speakEleven(clean, cfg, gen, onDone) {
       }),
       signal: ac.signal,
     });
-    if (gen !== speakGen) return;                      // a newer utterance took over
-    if (!res.ok) { const t = await res.text().catch(() => ''); throw new Error('HTTP ' + res.status + ' ' + t.slice(0, 160)); }
+    if (gen !== speakGen) { ttsAbort = null; return; }  // a newer utterance took over
+    if (!res.ok) {
+      const t = await res.text().catch(() => '');
+      const retriable = res.status === 429 || res.status >= 500;   // don't retry 401/403 auth / quota
+      retryOrFallback(retriable, 'HTTP ' + res.status + ' ' + t.slice(0, 120));
+      return;
+    }
     const buf = Buffer.from(await res.arrayBuffer());
-    if (gen !== speakGen) return;
+    if (gen !== speakGen) { ttsAbort = null; return; }
     ttsAbort = null;
     const tmp = path.join(os.tmpdir(), 'nexus-tts-' + gen + '-' + Date.now() + '.mp3');
     fs.writeFileSync(tmp, buf);
     playProc = execFile('afplay', [tmp], () => { try { fs.unlinkSync(tmp); } catch (_) {} if (gen === speakGen) { playProc = null; onDone && onDone(); } });
   } catch (err) {
-    if (ac.aborted || gen !== speakGen) return;        // intentionally stopped/superseded — no fallback
-    ttsAbort = null;
-    try { console.warn('[TTS] ElevenLabs failed, using system voice:', (err && err.message) || err); } catch (_) {}
-    speakSay(clean, gen, onDone);                       // graceful degrade so Sea still speaks
+    if ((err && err.name === 'AbortError') || ac.aborted || gen !== speakGen) { ttsAbort = null; return; }
+    retryOrFallback(true, (err && err.message) || 'network');       // network error → retry then fall back
   }
 }
 
