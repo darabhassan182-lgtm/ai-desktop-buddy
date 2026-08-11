@@ -1,5 +1,5 @@
 {
-  "version": "0.39.0",
+  "version": "0.40.0",
   "files": [
     "index.html",
     "styles.css",
@@ -15,6 +15,7 @@
     "voice-ui.js",
     "voiceid.js",
     "gmail-ui.js",
+    "slack-ui.js",
     "leaflet.js",
     "leaflet.css"
   ]

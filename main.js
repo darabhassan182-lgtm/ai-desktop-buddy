@@ -36,6 +36,7 @@ const DIRECTOR_SYSTEM = `You are Agent Sea, the Director of an AI studio. You ha
 You also have a long-term MEMORY. Use the \`remember\` tool whenever the user shares durable information (their name, company, preferences, a repeatable process/workflow) so you can act faster next time; use \`forget\` to remove an outdated item by id. Never re-ask for something already in MEMORY, and never ask for a stored credential's value.
 You control the user's HOLOGRAPHIC DISPLAY with the \`show\` tool. Be visual, like Jarvis: whenever a place, city, country, or landmark comes up, call \`show\` with kind 'map' and that place so the map flies to it on screen; when a short summary, list, or set of facts would help, call \`show\` with kind 'info'. Do this proactively and in ADDITION to speaking.
 You can READ and SEARCH the user's Gmail with \`gmail_search\` (find an address, look up or check emails — returns senders/subjects/snippets + ids) and \`gmail_read\` (full body of one message by id, for summarizing). Use these to actually look things up instead of saying you can't.
+You can use SLACK when connected: \`slack_search\` to find/read messages, and \`slack_send\` to post a message (channel can be #channel or @person). Confirm before sending a Slack message, same as email. If a Slack action fails because it isn't connected, tell them to click the 💬 button to connect Slack.
 You can SEND EMAIL from the user's connected Gmail with the \`send_email\` tool. Workflow: draft the email (delegate to Echo if helpful), then READ BACK the recipient, subject, and a short summary of the body and ask "shall I send it?"; only after the user clearly confirms, call \`send_email\`. Never send without that confirmation. If sending fails because Gmail isn't connected, tell them to click the 📧 button to connect Gmail.
 You are calm, refined, and efficient — like Jarvis from Iron Man. For each request, delegate to the right specialist(s) when needed (you may delegate more than once); for simple things, answer directly. Reply with a VERY brief spoken answer — ideally one sentence, at most two — natural and composed, no markdown, no bullet points, no URLs (it is read aloud). Address the user directly.`;
 
@@ -107,7 +108,55 @@ const GMAIL_READ_TOOL = {
   description: "Read the FULL body of one Gmail message by its id (ids come from gmail_search). Use to summarize or answer questions about a specific email.",
   input_schema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
 };
-const DIRECTOR_TOOLS = [DELEGATE_TOOL, REMEMBER_TOOL, FORGET_TOOL, SHOW_TOOL, SEND_EMAIL_TOOL, GMAIL_SEARCH_TOOL, GMAIL_READ_TOOL];
+const SLACK_SEND_TOOL = {
+  name: 'slack_send',
+  description: "Send a Slack message from the user's connected Slack. `channel` can be #channel, @person, or a channel/DM id. ONLY send after reading it back and getting a clear yes — same as email.",
+  input_schema: { type: 'object', properties: { channel: { type: 'string' }, text: { type: 'string' } }, required: ['channel', 'text'] },
+};
+const SLACK_SEARCH_TOOL = {
+  name: 'slack_search',
+  description: "Search the user's Slack messages (needs a Slack user token). Returns matching messages with who/where/text. Use to find a message, catch up, or look something up.",
+  input_schema: { type: 'object', properties: { query: { type: 'string' }, count: { type: 'number', description: '1–20, default 10' } }, required: ['query'] },
+};
+const DIRECTOR_TOOLS = [DELEGATE_TOOL, REMEMBER_TOOL, FORGET_TOOL, SHOW_TOOL, SEND_EMAIL_TOOL, GMAIL_SEARCH_TOOL, GMAIL_READ_TOOL, SLACK_SEND_TOOL, SLACK_SEARCH_TOOL];
+
+// --- Slack (Web API via a user/bot token) -----------------------------------
+function slackToken() { return loadConfig().slackToken || ''; }
+async function slackCall(method, params) {
+  const token = slackToken();
+  if (!token) throw new Error('Slack not connected');
+  const res = await fetch('https://slack.com/api/' + method, {
+    method: 'POST',
+    headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json; charset=utf-8' },
+    body: JSON.stringify(params || {}),
+  });
+  const d = await res.json().catch(() => ({ ok: false, error: 'bad-response' }));
+  if (!d.ok) throw new Error('Slack ' + method + ': ' + (d.error || 'failed'));
+  return d;
+}
+async function slackResolveChannel(name) {
+  const n = String(name || '').replace(/^[#@]/, '').toLowerCase().trim();
+  if (/^[CDG][A-Z0-9]{6,}$/.test(String(name || ''))) return name;   // already an id
+  try {
+    const conv = await slackCall('conversations.list', { types: 'public_channel,private_channel', limit: 1000 });
+    const ch = (conv.channels || []).find((c) => (c.name || '').toLowerCase() === n);
+    if (ch) return ch.id;
+  } catch (_) {}
+  const users = await slackCall('users.list', {});
+  const u = (users.members || []).find((m) => (m.name || '').toLowerCase() === n || ((m.profile && m.profile.display_name) || '').toLowerCase() === n || ((m.profile && m.profile.real_name) || '').toLowerCase() === n);
+  if (u) { const dm = await slackCall('conversations.open', { users: u.id }); return dm.channel.id; }
+  throw new Error('No Slack channel or person called "' + name + '"');
+}
+async function slackSend(channel, text) {
+  const id = await slackResolveChannel(channel);
+  const d = await slackCall('chat.postMessage', { channel: id, text: String(text || '') });
+  return d.ts || 'sent';
+}
+async function slackSearch(query, count) {
+  const d = await slackCall('search.messages', { query: String(query || ''), count: Math.max(1, Math.min(20, count || 10)) });
+  return (((d.messages || {}).matches) || []).map((m) => ({ from: m.username || m.user || '', channel: (m.channel && m.channel.name) || '', text: m.text || '', permalink: m.permalink || '' }));
+}
+async function slackAuthTest() { const d = await slackCall('auth.test', {}); return { team: d.team, user: d.user }; }
 
 // --- Gmail sending (SMTP + App Password via nodemailer) ---------------------
 function gmailConfig() {
@@ -369,7 +418,7 @@ function cmpVersions(a, b) {
   for (let i = 0; i < 3; i++) { const d = (pa[i] || 0) - (pb[i] || 0); if (d) return d > 0 ? 1 : -1; }
   return 0;
 }
-const CONTENT_FILES = ['index.html', 'styles.css', 'renderer.js', 'voice.js', 'game.js', 'memory.js', 'memory.css', 'jarvis.js', 'jarvis.css', 'display.js', 'display.css', 'voice-ui.js', 'voiceid.js', 'gmail-ui.js', 'leaflet.js', 'leaflet.css', 'manifest.json'];
+const CONTENT_FILES = ['index.html', 'styles.css', 'renderer.js', 'voice.js', 'game.js', 'memory.js', 'memory.css', 'jarvis.js', 'jarvis.css', 'display.js', 'display.css', 'voice-ui.js', 'voiceid.js', 'gmail-ui.js', 'slack-ui.js', 'leaflet.js', 'leaflet.css', 'manifest.json'];
 function syncBundledContent() {
   const src = bundledContentDir(), dst = userContentDir();
   const bundled = readManifest(src), user = readManifest(dst);
@@ -435,6 +484,19 @@ ipcMain.handle('gmail:test', async () => {
   const g = gmailConfig();
   if (!g.user || (!g.oauth && !g.pass)) return { ok: false, error: 'Not connected.' };
   try { const id = await sendGmail(g.user, 'Nexus test ✓', 'This is a test from Agent Sea — email sending works.'); return { ok: true, id }; }
+  catch (e) { return { ok: false, error: (e && e.message) || String(e) }; }
+});
+
+// --- Slack connect IPC ------------------------------------------------------
+ipcMain.handle('slack:get', () => ({ connected: !!slackToken() }));
+ipcMain.handle('slack:set', (_e, token) => {
+  const c = loadConfig(); const t = String(token || '').trim();
+  if (t) c.slackToken = t; else delete c.slackToken;
+  saveConfig(c); return { ok: true, connected: !!c.slackToken };
+});
+ipcMain.handle('slack:test', async () => {
+  if (!slackToken()) return { ok: false, error: 'Not connected.' };
+  try { const a = await slackAuthTest(); return { ok: true, team: a.team, user: a.user }; }
   catch (e) { return { ok: false, error: (e && e.message) || String(e) }; }
 });
 
@@ -778,6 +840,25 @@ ipcMain.handle('orch:ask', async (event, text) => {
               zoom: (typeof inp.zoom === 'number' && isFinite(inp.zoom)) ? Math.max(2, Math.min(18, inp.zoom)) : null,
             });
             results[idx] = { type: 'tool_result', tool_use_id: tu.id, content: 'Displayed on the holographic HUD.' };
+          } else if (tu.name === 'slack_search') {
+            emit('agent', { agentId: 'inbox', state: 'searching' });
+            jobs.push((async () => {
+              try {
+                const r = await slackSearch(inp.query, inp.count);
+                emit('agent', { agentId: 'inbox', state: 'done' });
+                results[idx] = { type: 'tool_result', tool_use_id: tu.id, content: r.length ? r.map((m, i) => (i + 1) + '. #' + m.channel + ' @' + m.from + ': ' + m.text).join('\n') : 'No matching Slack messages.' };
+              } catch (e) { emit('agent', { agentId: 'inbox', state: 'idle' }); results[idx] = { type: 'tool_result', tool_use_id: tu.id, content: 'Slack search failed: ' + ((e && e.message) || e), is_error: true }; }
+            })());
+          } else if (tu.name === 'slack_send') {
+            emit('agent', { agentId: 'inbox', state: 'working' });
+            jobs.push((async () => {
+              try {
+                const ts = await slackSend(inp.channel, inp.text);
+                emit('notice', { text: 'Slack message sent to ' + inp.channel });
+                emit('agent', { agentId: 'inbox', state: 'done' });
+                results[idx] = { type: 'tool_result', tool_use_id: tu.id, content: 'Slack message sent to ' + inp.channel + ' (' + ts + ').' };
+              } catch (e) { const msg = (e && e.message) || String(e); emit('agent', { agentId: 'inbox', state: 'idle' }); results[idx] = { type: 'tool_result', tool_use_id: tu.id, content: 'Could not send Slack: ' + msg + (/not connected/i.test(msg) ? ' — tell the user to click the 💬 button to connect Slack.' : ''), is_error: true }; }
+            })());
           } else if (tu.name === 'gmail_search') {
             emit('agent', { agentId: 'inbox', state: 'searching' });
             jobs.push((async () => {

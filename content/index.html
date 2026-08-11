@@ -27,6 +27,7 @@
       <button id="visionBtn" class="ghost-btn" type="button" title="Let Sea see your screen" aria-label="Vision">👁️</button>
       <button id="voiceBtn" class="ghost-btn" type="button" title="Sea's voice" aria-label="Voice settings">🔊</button>
       <button id="gmailBtn" class="ghost-btn" type="button" title="Connect Gmail (let Echo send email)" aria-label="Connect Gmail">📧</button>
+      <button id="slackBtn" class="ghost-btn" type="button" title="Connect Slack (let Echo message Slack)" aria-label="Connect Slack">💬</button>
       <button id="memoryBtn" class="ghost-btn" type="button" title="Memory" aria-label="Memory">🧠</button>
       <button id="updateBtn" class="ghost-btn" type="button" title="Check for updates" aria-label="Check for updates">⟳</button>
       <button id="settingsBtn" class="ghost-btn" type="button" title="Settings" aria-label="Settings">⚙️</button>
@@ -121,6 +122,23 @@
     </div>
   </div>
 
+  <!-- Connect Slack modal -->
+  <div id="slackModal" aria-hidden="true">
+    <div class="setup-card voice-card" role="dialog" aria-modal="true" aria-labelledby="slackHeading">
+      <div class="setup-mark" aria-hidden="true">💬</div>
+      <h1 id="slackHeading">Connect Slack</h1>
+      <p class="setup-sub">So Echo can send and search your Slack. Paste a Slack token (starts with <b>xoxp-</b> or <b>xoxb-</b>).</p>
+      <label class="voice-label" for="slackToken">Slack token</label>
+      <input id="slackToken" type="password" autocomplete="off" spellcheck="false" placeholder="xoxp-… (stored only on this Mac)" />
+      <div id="slackState" class="voice-state"></div>
+      <div class="voice-actions">
+        <button id="slackTest" type="button" class="voice-btn-secondary">Check connection</button>
+        <button id="slackDone" type="button">Save</button>
+      </div>
+      <p class="voice-foot">Get a token at api.slack.com/apps → create an app → OAuth &amp; Permissions → add scopes (chat:write, search:read, channels:read, users:read) → Install → copy the token. Stored only on this Mac.</p>
+    </div>
+  </div>
+
   <!-- Transient toast -->
   <div id="toast" role="status" aria-live="polite"></div>
 
@@ -163,6 +181,7 @@
   <script src="voiceid.js"></script>
   <script src="voice-ui.js"></script>
   <script src="gmail-ui.js"></script>
+  <script src="slack-ui.js"></script>
   <script src="jarvis.js"></script>
 </body>
 </html>

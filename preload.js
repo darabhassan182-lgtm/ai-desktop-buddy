@@ -30,6 +30,12 @@ contextBridge.exposeInMainWorld('nexus', {
     set: (user, pass) => ipcRenderer.invoke('gmail:set', user, pass),
     test: () => ipcRenderer.invoke('gmail:test'),
   },
+  // Slack (token stored locally; never returned)
+  slack: {
+    get: () => ipcRenderer.invoke('slack:get'),
+    set: (token) => ipcRenderer.invoke('slack:set', token),
+    test: () => ipcRenderer.invoke('slack:test'),
+  },
   // Voice (ElevenLabs cinematic TTS): key never returned to the renderer
   voice: {
     get: () => ipcRenderer.invoke('voice:get'),
