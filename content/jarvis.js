@@ -36,6 +36,18 @@
 
   /* ---------- hands-free wake word ---------- */
   var listening = false, rec = null, recording = false, chunks = [], loopStream = null;
+
+  // While Sea is speaking, DON'T listen — otherwise its own voice loops back
+  // through the mic and it interrupts itself. Resume shortly after it finishes.
+  var seaSpeaking = false, speakCooldownUntil = 0;
+  try {
+    if (nx && typeof nx.on === 'function') nx.on('manager', function (p) {
+      var st = p && p.state;
+      if (st === 'speaking') seaSpeaking = true;
+      else { if (seaSpeaking) speakCooldownUntil = Date.now() + 700; seaSpeaking = false; }
+    });
+  } catch (e) {}
+  function seaBusy() { return seaSpeaking || Date.now() < speakCooldownUntil; }
   function stripWake(text) {
     var t = String(text || '').trim().replace(/^[,.\s"']+/, '');
     var m = /^(hey\s+|ok\s+)?(sea|jarvis|cea|see)\b[\s,.:!?-]*/i.exec(t);
@@ -68,6 +80,8 @@
     rec.ondataavailable = function (e) { if (e.data && e.data.size) chunks.push(e.data); };
     rec.onstop = function () {
       if (!listening) return;
+      // Ignore anything captured while Sea is speaking (its own voice) — no self-interrupt.
+      if (seaBusy()) { if (listening) listenLoop(); return; }
       // Skip silent windows — don't spend a cloud transcription on background noise.
       if (windowPeak < 0.045) { if (listening) listenLoop(); return; }
       var blob = new Blob(chunks, { type: (rec && rec.mimeType) || 'audio/webm' });

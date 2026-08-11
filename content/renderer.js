@@ -169,7 +169,12 @@
     // else: caught up, nothing pending -> loop parks (zero cost)
   }
 
+  // Per user preference: Sea SPEAKS its reply and does not display the text.
+  // The HUD's "SPEAKING" state (driven by the manager events) is the only cue.
+  var SHOW_REPLY_TEXT = false;
+
   function appendDelta(text) {
+    if (!SHOW_REPLY_TEXT) return;
     if (!text) return;
     revealAnswerCard();
     tw.target += String(text);

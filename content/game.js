@@ -32,6 +32,7 @@
   var beams = [];                        // { dir, id, t, dur, color }
   var stars = [], motes = [], spec = new Array(24);
   var noiseTiles = [], scanPat = null;
+  var bgGrad = null, vignGrad = null, hexFade = null, NOISE = 512;   // cached per-resize (no per-frame allocs)
   AGENTS.forEach(function (a, i) { agent[a.id] = { state: 'idle', glow: 0, seed: i * 1.7 }; });
   var lastRouted = null;
 
@@ -73,8 +74,8 @@
   function buildNoise() {
     if (noiseTiles.length) return;
     for (var k = 0; k < 3; k++) {
-      var c = document.createElement('canvas'); c.width = c.height = 128;
-      var g = c.getContext('2d'); var img = g.createImageData(128, 128);
+      var c = document.createElement('canvas'); c.width = c.height = NOISE;
+      var g = c.getContext('2d'); var img = g.createImageData(NOISE, NOISE);
       for (var i = 0; i < img.data.length; i += 4) {
         var v = (Math.random() * 255) | 0;
         img.data[i] = img.data[i + 1] = img.data[i + 2] = v;
@@ -82,6 +83,16 @@
       }
       g.putImageData(img, 0, 0); noiseTiles.push(c);
     }
+  }
+  function buildGradients() {
+    if (!ctx) return;
+    bgGrad = ctx.createRadialGradient(W / 2, H * 0.44, 0, W / 2, H * 0.5, Math.max(W, H) * 0.8);
+    bgGrad.addColorStop(0, '#0c1730'); bgGrad.addColorStop(0.45, '#080d1c'); bgGrad.addColorStop(1, '#03050b');
+    vignGrad = ctx.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.3, W / 2, H / 2, Math.max(W, H) * 0.72);
+    vignGrad.addColorStop(0, 'rgba(0,0,0,0)'); vignGrad.addColorStop(1, 'rgba(0,0,0,0.5)');
+    var rin = Math.min(W, H) * 0.155;
+    hexFade = ctx.createRadialGradient(W / 2, H * 0.47, rin, W / 2, H * 0.47, Math.max(W, H) * 0.6);
+    hexFade.addColorStop(0, 'rgba(3,5,11,0)'); hexFade.addColorStop(1, 'rgba(3,5,11,0.85)');
   }
   function buildScan() {
     if (scanPat) return;
@@ -95,7 +106,7 @@
     dpr = Math.min(window.devicePixelRatio || 1, 2);
     W = canvas.clientWidth || window.innerWidth; H = canvas.clientHeight || window.innerHeight;
     canvas.width = Math.max(1, (W * dpr) | 0); canvas.height = Math.max(1, (H * dpr) | 0);
-    buildStars();
+    buildStars(); buildGradients();
   }
 
   /* ---------- loop ---------- */
@@ -154,9 +165,7 @@
   }
 
   function drawBackground(camX, camY) {
-    var g = ctx.createRadialGradient(W / 2 + camX * 0.3, H * 0.44 + camY * 0.3, 0, W / 2, H * 0.5, Math.max(W, H) * 0.8);
-    g.addColorStop(0, '#0c1730'); g.addColorStop(0.45, '#080d1c'); g.addColorStop(1, '#03050b');
-    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = bgGrad || '#080d1c'; ctx.fillRect(0, 0, W, H);
     // drifting nebula wash
     ctx.save(); ctx.globalCompositeOperation = 'lighter';
     var nb = ctx.createRadialGradient(W * (0.34 + 0.03 * Math.sin(t * 0.1)), H * 0.62, 0, W * 0.34, H * 0.62, Math.max(W, H) * 0.5);
@@ -185,10 +194,8 @@
     var step = 46, ox = (cx % step), oy = (cy % step);
     for (var x = ox; x < W; x += step) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke(); }
     for (var y = oy; y < H; y += step) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
-    // radial darken so the grid fades away from the core
-    var v = ctx.createRadialGradient(cx, cy, R, cx, cy, Math.max(W, H) * 0.6);
-    v.addColorStop(0, 'rgba(3,5,11,0)'); v.addColorStop(1, 'rgba(3,5,11,0.85)');
-    ctx.fillStyle = v; ctx.fillRect(0, 0, W, H);
+    // radial darken so the grid fades away from the core (cached gradient)
+    if (hexFade) { ctx.fillStyle = hexFade; ctx.fillRect(0, 0, W, H); }
     ctx.restore();
   }
 
@@ -228,7 +235,6 @@
 
   function ring(cx, cy, r, w, color, alpha, dashCount, rot, blur) {
     ctx.save(); ctx.globalAlpha = alpha; ctx.strokeStyle = color; ctx.lineWidth = w;
-    if (blur) { ctx.shadowColor = color; ctx.shadowBlur = blur; }
     if (dashCount) {
       var seg = 6.2832 / dashCount;
       for (var i = 0; i < dashCount; i++) { var a0 = rot + i * seg; ctx.beginPath(); ctx.arc(cx, cy, r, a0, a0 + seg * 0.6); ctx.stroke(); }
@@ -269,7 +275,7 @@
     ctx.fillStyle = cg; ctx.fillRect(cx - coreR, cy - coreR, coreR * 2, coreR * 2);
     // turbulent blobs
     ctx.globalCompositeOperation = 'lighter';
-    for (var b = 0; b < 5; b++) {
+    for (var b = 0; b < 3; b++) {
       var a = spin * (1.2 + b * 0.3) + b * 1.7;
       var br = coreR * (0.2 + 0.28 * ((b % 3) / 2));
       var bx = cx + Math.cos(a) * coreR * 0.32, by = cy + Math.sin(a * 1.3) * coreR * 0.32;
@@ -340,8 +346,8 @@
       ctx.strokeStyle = hexA(A.accent, 0.3 + glow * 0.6); ctx.lineWidth = 2;
       ctx.beginPath(); ctx.arc(p.x, p.y, 11, 0, 6.2832); ctx.stroke();
       ctx.save(); ctx.globalCompositeOperation = 'lighter';
-      ctx.fillStyle = hexA(A.accent, 0.5 + glow * 0.5); ctx.shadowColor = A.accent; ctx.shadowBlur = 8 + glow * 10;
-      ctx.beginPath(); ctx.arc(p.x, p.y, 4.5 + glow * 2.5, 0, 6.2832); ctx.fill();
+      ctx.fillStyle = hexA(A.accent, 0.6 + glow * 0.4);
+      ctx.beginPath(); ctx.arc(p.x, p.y, 5 + glow * 3, 0, 6.2832); ctx.fill();
       ctx.restore();
       // busy sweep
       if (busy) { ctx.strokeStyle = hexA(A.accent, 0.9); ctx.lineWidth = 2.5; ctx.beginPath(); ctx.arc(p.x, p.y, 19, t * 5, t * 5 + 1.5); ctx.stroke(); }
@@ -412,10 +418,8 @@
     // title + status (above the core)
     var topY = cy - R * 1.95;
     ctx.textAlign = 'center';
-    ctx.save(); ctx.shadowColor = CYAN; ctx.shadowBlur = 12;
     ctx.fillStyle = hexA(ICE, 0.95); ctx.font = '700 16px ui-monospace, Menlo, monospace';
     ctx.fillText('A G E N T   S E A', cx, topY);
-    ctx.restore();
     var stt = statusText(), blink = (Math.sin(t * 3) > -0.3);
     ctx.fillStyle = stt === 'STANDING BY' ? hexA(BLUE, 0.6) : hexA(CYAN, 0.95);
     ctx.font = '600 11px ui-monospace, Menlo, monospace';
@@ -427,18 +431,16 @@
   }
 
   function drawPost() {
-    // vignette
-    var vg = ctx.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.3, W / 2, H / 2, Math.max(W, H) * 0.72);
-    vg.addColorStop(0, 'rgba(0,0,0,0)'); vg.addColorStop(1, 'rgba(0,0,0,0.5)');
-    ctx.fillStyle = vg; ctx.fillRect(0, 0, W, H);
+    // vignette (cached gradient)
+    if (vignGrad) { ctx.fillStyle = vignGrad; ctx.fillRect(0, 0, W, H); }
     // scanlines
     if (scanPat) { ctx.save(); ctx.globalAlpha = 0.5; ctx.fillStyle = scanPat; ctx.fillRect(0, 0, W, H); ctx.restore(); }
-    // film grain
+    // film grain — large tiles → only a few draws per frame
     if (noiseTiles.length) {
-      ctx.save(); ctx.globalAlpha = 0.05; ctx.globalCompositeOperation = 'lighter';
-      var nt = noiseTiles[(t * 24 | 0) % noiseTiles.length];
-      var ox = (Math.sin(t * 40) * 40) | 0, oy = (Math.cos(t * 37) * 40) | 0;
-      for (var x = ox - 128; x < W; x += 128) for (var y = oy - 128; y < H; y += 128) ctx.drawImage(nt, x, y);
+      ctx.save(); ctx.globalAlpha = 0.045; ctx.globalCompositeOperation = 'lighter';
+      var nt = noiseTiles[(t * 20 | 0) % noiseTiles.length];
+      var ox = (Math.sin(t * 40) * 30) | 0, oy = (Math.cos(t * 37) * 30) | 0;
+      for (var x = ox - NOISE; x < W; x += NOISE) for (var y = oy - NOISE; y < H; y += NOISE) ctx.drawImage(nt, x, y);
       ctx.restore();
     }
     // faint flicker
