@@ -75,16 +75,32 @@
   var listening = false, rec = null, chunks = [], loopStream = null;
 
   // While Sea is speaking, DON'T listen — otherwise its own voice loops back
-  // through the mic and it interrupts itself. Resume shortly after it finishes.
+  // through the mic and it interrupts itself. Resume a beat after it finishes.
   var seaSpeaking = false, speakCooldownUntil = 0;
   try {
     if (nx && typeof nx.on === 'function') nx.on('manager', function (p) {
       var st = p && p.state;
       if (st === 'speaking') seaSpeaking = true;
-      else { if (seaSpeaking) speakCooldownUntil = Date.now() + 300; seaSpeaking = false; }
+      else { if (seaSpeaking) speakCooldownUntil = Date.now() + 900; seaSpeaking = false; }
     });
   } catch (e) {}
   function seaBusy() { return seaSpeaking || Date.now() < speakCooldownUntil; }
+
+  // Echo guard: remember what Sea just SAID, and ignore any capture that is really
+  // Sea's own voice coming back through the speakers (prevents the self-reply loop).
+  var lastSpoken = { text: '', at: 0 };
+  try { if (nx && typeof nx.on === 'function') nx.on('answer', function (p) { var t = p && p.text ? p.text : ''; if (t) lastSpoken = { text: normText(t), at: Date.now() }; }); } catch (e) {}
+  function normText(t) { return String(t || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim(); }
+  function looksLikeEcho(raw) {
+    if (!lastSpoken.text || Date.now() - lastSpoken.at > 14000) return false;
+    var h = normText(raw); if (h.length < 4) return false;
+    var s = lastSpoken.text;
+    if (s.indexOf(h) !== -1 || h.indexOf(s) !== -1) return true;   // full/partial containment
+    var sw = {}; s.split(' ').forEach(function (w) { sw[w] = 1; });
+    var hw = h.split(' '), common = 0;
+    hw.forEach(function (w) { if (sw[w]) common++; });
+    return hw.length >= 3 && (common / hw.length) >= 0.6;          // strong word overlap
+  }
 
   // Conversation mode: say "Sea" once → awake for follow-ups (no wake word) until idle.
   var AWAKE_MS = 30000, awakeUntil = 0;
@@ -186,6 +202,7 @@
   function handleHeard(text) {
     var raw = String(text || '').trim();
     if (!raw) return;
+    if (looksLikeEcho(raw)) { clearCue(); return; }   // Sea hearing itself → ignore, don't reply/loop
     // Sleep phrases end the conversation → require "Sea" again.
     if (isAwake() && /\b(go to sleep|stop listening|that'?s all|that is all|never mind|stand down|dismiss)\b/i.test(raw)) {
       sleep(); clearCue(); toast('Standing by — say “Sea” to wake me.'); return;
