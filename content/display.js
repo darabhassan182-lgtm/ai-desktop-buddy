@@ -143,7 +143,7 @@
   }
 
   function showMap(p) {
-    mapEl.style.display = '';
+    mapEl.style.display = 'block';
     infoEl.style.display = 'none';
     var q = (p.query || p.title || '').trim();
     titleEl.textContent = ('◈ ' + (p.title || q || 'LOCATION')).toUpperCase();
@@ -176,7 +176,7 @@
   /* ---------- info card ---------- */
   function renderInfoBody(title, body) {
     mapEl.style.display = 'none';
-    infoEl.style.display = '';
+    infoEl.style.display = 'block';
     titleEl.textContent = ('◈ ' + (title || 'INFO')).toUpperCase();
     subEl.textContent = '';
     var lines = String(body || '').split(/\n+/).filter(function (s) { return s.trim(); });

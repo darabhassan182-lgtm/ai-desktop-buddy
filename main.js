@@ -75,7 +75,7 @@ const SHOW_TOOL = {
       kind: { type: 'string', enum: ['map', 'info'], description: "'map' flies a holographic map to a place; 'info' shows a readable text panel." },
       query: { type: 'string', description: "For kind=map: the place to fly to, e.g. 'London', 'Eiffel Tower', 'Tokyo, Japan'." },
       title: { type: 'string', description: 'Short heading for the panel (both kinds).' },
-      body: { type: 'string', description: 'For kind=info: a few short lines of readable content (plain text; newlines allowed).' },
+      body: { type: 'string', description: "For kind=info: REQUIRED — the actual content to display, e.g. the numbered steps or facts, each item on its OWN line (use newlines). Do not leave this empty; the title is only a heading." },
       zoom: { type: 'number', description: 'Optional map zoom 3–17 (country≈5, city≈11, landmark≈16).' },
     },
     required: ['kind'],
@@ -213,6 +213,32 @@ function buildMemoryBlock() {
   return s;
 }
 
+// --- Short-term conversation memory (the running chat, remembered across prompts + restarts) ---
+let conversation = [];               // [{ role:'user'|'assistant', content:string }]
+const CONV_MAX_MESSAGES = 2000;      // up to ~1000 exchanges
+const CONV_MAX_CHARS = 200000;       // ~50k-token safety cap so each request stays fast
+function convPath() { return path.join(app.getPath('userData'), 'conversation.json'); }
+function loadConversation() {
+  try {
+    const a = JSON.parse(fs.readFileSync(convPath(), 'utf8'));
+    if (Array.isArray(a)) conversation = a.filter((m) => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string');
+  } catch (_) {}
+}
+function saveConversation() { try { fs.writeFileSync(convPath(), JSON.stringify(conversation)); } catch (_) {} }
+function trimConversation() {
+  if (conversation.length > CONV_MAX_MESSAGES) conversation = conversation.slice(-CONV_MAX_MESSAGES);
+  let total = 0; for (const m of conversation) total += m.content.length;
+  while (conversation.length > 2 && total > CONV_MAX_CHARS) { total -= conversation[0].content.length; conversation.shift(); }
+  while (conversation.length && conversation[0].role !== 'user') conversation.shift(); // history must start on a user turn
+}
+function priorMessages() { return conversation.map((m) => ({ role: m.role, content: m.content })); }
+function recordExchange(userText, assistantText) {
+  conversation.push({ role: 'user', content: String(userText || '') }, { role: 'assistant', content: String(assistantText || '(no reply)') });
+  trimConversation(); saveConversation();
+}
+function resetConversation() { conversation = []; saveConversation(); }
+const RESET_RE = /^\s*(new conversation|start over|start fresh|fresh start|forget (this|our) (chat|conversation)|clear (the )?(chat|history|conversation)|reset( the)? (chat|conversation))\s*[.!]?\s*$/i;
+
 // --- Live content updates (UI layer) ----------------------------------------
 const DEFAULT_REMOTE = 'https://raw.githubusercontent.com/darabhassan182-lgtm/ai-desktop-buddy/main/content';
 function remoteBase() { return loadConfig().updateUrl || process.env.NEXUS_UPDATE_URL || DEFAULT_REMOTE; }
@@ -248,6 +274,7 @@ function createWindow() {
 
 app.whenReady().then(() => {
   initClient();
+  loadConversation();
   if (app.isPackaged) syncBundledContent();
   session.defaultSession.setPermissionRequestHandler((_wc, _p, cb) => cb(true));
   // Let Sea "see" the screen (getDisplayMedia) — hand back the primary screen source.
@@ -439,13 +466,14 @@ ipcMain.handle('orch:askVision', async (event, payload) => {
     const stream = client.messages.stream({
       model: 'claude-opus-4-8', max_tokens: 1024,
       system: 'You are Agent Sea, a calm, refined Jarvis-like assistant. Look at the image and answer the user in ONE or two short spoken sentences — no markdown, no lists, no URLs.',
-      messages: [{ role: 'user', content: [
+      messages: priorMessages().concat([{ role: 'user', content: [
         { type: 'image', source: { type: 'base64', media_type: m[1], data: m[2] } },
         { type: 'text', text: String(text) },
-      ] }],
+      ] }]),
     });
     const msg = await stream.finalMessage();
     const finalText = msg.content.filter((b) => b.type === 'text').map((b) => b.text).join(' ').trim();
+    recordExchange('[looked at my screen] ' + String(text), finalText);
     emit('manager', { state: 'speaking' });
     if (finalText) emit('delta', { text: finalText });
     emit('answer', { text: finalText });
@@ -493,8 +521,19 @@ ipcMain.handle('orch:ask', async (event, text) => {
   }
   const userText = String(text || '');
 
+  // "start over" / "new conversation" clears the running short-term memory.
+  if (RESET_RE.test(userText)) {
+    resetConversation();
+    const line = 'Starting fresh — I have cleared our conversation.';
+    emit('manager', { state: 'speaking' });
+    emit('answer', { text: line });
+    speak(line, () => emit('manager', { state: 'idle' }));
+    return { ok: true, text: line };
+  }
+
   emit('manager', { state: 'thinking' });
-  const messages = [{ role: 'user', content: userText }];
+  // Include the prior conversation so Sea remembers what we've been talking about.
+  const messages = priorMessages().concat([{ role: 'user', content: userText }]);
   const system = DIRECTOR_SYSTEM + buildMemoryBlock();
   let finalText = '';
 
@@ -552,6 +591,7 @@ ipcMain.handle('orch:ask', async (event, text) => {
       break;
     }
 
+    recordExchange(userText, finalText);   // remember this turn for next time
     emit('manager', { state: 'speaking' });
     if (finalText) emit('delta', { text: finalText });
     emit('answer', { text: finalText });
