@@ -1,6 +1,6 @@
 {
   "name": "ai-desktop-buddy",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "A desktop AI character (Scout) you can talk to that researches the web and answers out loud.",
   "main": "main.js",
   "scripts": {
@@ -30,10 +30,12 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.116.0",
-    "dotenv": "^17.4.2"
+    "dotenv": "^17.4.2",
+    "three": "^0.185.1"
   },
   "devDependencies": {
     "electron": "^43.3.0",
-    "electron-builder": "^26.15.3"
+    "electron-builder": "^26.15.3",
+    "esbuild": "^0.28.2"
   }
 }

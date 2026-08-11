@@ -1,12 +1,4 @@
 {
-  "version": "0.6.0",
-  "files": [
-    "index.html",
-    "styles.css",
-    "renderer.js",
-    "voice.js",
-    "game.js",
-    "memory.js",
-    "memory.css"
-  ]
+  "version": "0.7.0",
+  "files": ["index.html", "styles.css", "renderer.js", "voice.js", "three.bundle.js", "game.js", "memory.js", "memory.css"]
 }
