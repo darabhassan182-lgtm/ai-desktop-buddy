@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Nexus</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <!-- ================= HUB (game-menu of sub-AIs) ================= -->
+    <section id="hub" class="view">
+      <header class="topbar">
+        <div class="brand"><span class="brand-mark">✦</span> Nexus <span class="ver" id="verTag"></span></div>
+        <div class="top-actions">
+          <button class="icon-btn" id="updateBtn" title="Check for updates">⟳</button>
+          <button class="icon-btn" id="hubSettings" title="Settings">⚙️</button>
+        </div>
+      </header>
+
+      <div class="hub-scroll">
+        <div class="hero">
+          <div class="hero-eyebrow">YOUR AI TEAM</div>
+          <h1>Pick a specialist</h1>
+          <p>Each one is a focused AI agent. Start with Scout — more are on the way.</p>
+        </div>
+        <div id="agentGrid" class="grid"></div>
+      </div>
+    </section>
+
+    <!-- ================= CHAT ================= -->
+    <section id="chat" class="view hidden">
+      <header class="topbar chat-top">
+        <button class="icon-btn" id="backBtn" title="Back">←</button>
+        <div class="chat-identity">
+          <span class="chat-avatar" id="chatAvatar">🔎</span>
+          <div>
+            <div class="chat-name" id="chatName">Scout</div>
+            <div class="chat-status" id="chatStatus">Ready</div>
+          </div>
+        </div>
+        <button class="icon-btn" id="chatSettings" title="Settings">⚙️</button>
+      </header>
+
+      <div id="transcript"></div>
+
+      <div id="composer">
+        <button class="icon-btn" id="micBtn" title="Speak">🎤</button>
+        <input id="input" type="text" placeholder="Ask anything…" />
+        <button id="sendBtn">Send</button>
+      </div>
+    </section>
+
+    <!-- ================= API KEY SETUP ================= -->
+    <div id="setup" class="hidden">
+      <div class="setup-card">
+        <div class="setup-avatar">✦</div>
+        <h2>Welcome to Nexus</h2>
+        <p>Paste your Anthropic API key to activate your AI team. It's stored only on this Mac.</p>
+        <input id="keyInput" type="password" placeholder="sk-ant-…" />
+        <button id="keySave">Save &amp; start</button>
+        <a id="keyLink" href="https://console.anthropic.com/settings/keys" target="_blank">Get a key →</a>
+        <div id="keyError"></div>
+      </div>
+    </div>
+
+    <div id="toast" class="hidden"></div>
+
+    <script type="module" src="voice.js"></script>
+    <script src="renderer.js"></script>
+  </body>
+</html>

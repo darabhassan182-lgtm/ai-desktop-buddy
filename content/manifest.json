@@ -1,0 +1,4 @@
+{
+  "version": "0.2.0",
+  "files": ["index.html", "styles.css", "renderer.js", "voice.js"]
+}

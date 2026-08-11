@@ -1,0 +1,39 @@
+{
+  "name": "ai-desktop-buddy",
+  "version": "0.1.0",
+  "description": "A desktop AI character (Scout) you can talk to that researches the web and answers out loud.",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --mac dmg"
+  },
+  "license": "MIT",
+  "build": {
+    "appId": "com.scout.desktopbuddy",
+    "productName": "Scout",
+    "files": [
+      "main.js",
+      "preload.js",
+      "content/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "target": "dmg",
+      "category": "public.app-category.productivity",
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "Nexus uses the microphone so you can talk to your AI agents."
+      }
+    },
+    "dmg": {
+      "title": "Scout"
+    }
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.116.0",
+    "dotenv": "^17.4.2"
+  },
+  "devDependencies": {
+    "electron": "^43.3.0",
+    "electron-builder": "^26.15.3"
+  }
+}
