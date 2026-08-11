@@ -16,13 +16,13 @@
   var audioCtx = null, analyser = null, timeData = null, vadTimer = 0;
   // VAD is ADAPTIVE: a running ambient noise floor + margin + hysteresis over a
   // time-domain RMS level (not a fixed absolute gate), so it tracks mic gain/room.
-  var SILENCE_HANG = 500, MIN_UTTER = 200, MAX_UTTER = 12000;
+  var SILENCE_HANG = 500, MIN_UTTER = 200, MAX_UTTER = 8000;
   var noiseFloor = 0.02, FLOOR_ALPHA = 0.05;                     // running ambient RMS (0..1)
   var START_MARGIN = 0.020, START_MULT = 1.9, START_MIN = 0.045; // entry gate = max(floor+margin, floor*mult, min)
   var SPEECH_MULT = 1.8, SPEECH_MIN = 0.085;                     // raised entry gate while Sea speaks (anti self-interrupt)
   // Voice-ID gate: only verify clips ≥ VID_MIN_MS; if verify exceeds VID_TIMEOUT, fail OPEN.
   var VID_TIMEOUT = 1200, VID_MIN_MS = 1100;
-  var capturing = false, captureStart = 0, silenceStart = 0, aborted = false, captureDuringSpeech = false;
+  var capturing = false, captureStart = 0, silenceStart = 0, aborted = false, captureDuringSpeech = false, speechPeak = 0;
 
   function startMeter(stream) {
     try {
@@ -53,7 +53,6 @@
     var now = Date.now();
     var duringSpeech = seaBusy();
     var startT = Math.max(noiseFloor + START_MARGIN, noiseFloor * START_MULT, START_MIN);  // adaptive entry gate
-    var silenceT = Math.max(noiseFloor + 0.008, startT * 0.55);                            // exit gate (< entry → hysteresis)
     var entryT = duringSpeech ? Math.max(startT * SPEECH_MULT, SPEECH_MIN) : startT;       // raise gate vs Sea's bleed
     // Learn the ambient floor only when idle AND quiet (never fold speech/Sea into it).
     if (!capturing && !duringSpeech && amp < startT) {
@@ -61,8 +60,12 @@
       if (noiseFloor < 0.004) noiseFloor = 0.004; else if (noiseFloor > 0.12) noiseFloor = 0.12;
     }
     if (!capturing) {
-      if (amp >= entryT) beginCapture(duringSpeech);
+      if (amp >= entryT) { beginCapture(duringSpeech); speechPeak = amp; }
     } else {
+      // Endpoint RELATIVE to how loud YOU just were, so stopping is detected even if
+      // auto-gain / background keeps some noise present (fixes "doesn't stop listening").
+      speechPeak = Math.max(amp, speechPeak * 0.992);
+      var silenceT = Math.max(noiseFloor + 0.010, speechPeak * 0.35);
       if (amp >= silenceT) silenceStart = 0;
       else if (!silenceStart) silenceStart = now;
       var dur = now - captureStart, sil = silenceStart ? now - silenceStart : 0;
@@ -138,7 +141,7 @@
   function toggleHandsFree() { if (listening) stopHandsFree(); else startHandsFree(); }
   function startHandsFree() {
     if (!window.NexusVoice || !window.NexusVoice.transcribe) { toast('Voice engine still loading — try again in a moment.'); return; }
-    navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } }).then(function (stream) {
+    navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: false } }).then(function (stream) {
       loopStream = stream; listening = true; sleep();
       var btn = $('jarvisBtn'); if (btn) btn.classList.add('active');
       W('setListening', true); startMeter(loopStream);
