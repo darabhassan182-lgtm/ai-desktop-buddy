@@ -344,15 +344,19 @@ ipcMain.handle('memory:encAvailable', () => encAvailable());
 // as an always-available fallback. Any ElevenLabs failure degrades to `say`.
 const DEFAULT_ELEVEN_VOICE = 'onwK4e9ZLuTAKqWW03F9';   // "Daniel — Steady Broadcaster" (British, composed)
 const DEFAULT_ELEVEN_MODEL = 'eleven_multilingual_v2'; // most cinematic; flash_v2_5 is the low-latency option
-let sayProc = null, playProc = null, ttsAbort = null;
+let sayProc = null, playProc = null, ttsAbort = null, speakGen = 0;
 
+// Every new utterance (and every stop) bumps speakGen. All async continuations
+// check their captured gen against the live speakGen and bail if superseded, so
+// only ONE voice can ever be producing audio — no overlapping / leaking voices.
 function stopSpeaking() {
-  if (sayProc) { try { sayProc.kill(); } catch (_) {} sayProc = null; }
-  if (playProc) { try { playProc.kill(); } catch (_) {} playProc = null; }
+  speakGen++;
   if (ttsAbort) { try { ttsAbort.abort(); } catch (_) {} ttsAbort = null; }
+  if (playProc) { try { playProc.kill(); } catch (_) {} playProc = null; }
+  if (sayProc)  { try { sayProc.kill(); }  catch (_) {} sayProc = null; }
 }
 
-function speakSay(clean, onDone) {
+function speakSay(clean, gen, onDone) {
   const cfg = loadConfig();
   const voice = cfg.voice || 'Daniel';
   const rate  = cfg.voiceRate  != null ? cfg.voiceRate  : 178;
@@ -360,12 +364,14 @@ function speakSay(clean, onDone) {
   const pmod  = cfg.voicePmod  != null ? cfg.voicePmod  : 22;
   const tuned = '[[pbas ' + pitch + ']] [[pmod ' + pmod + ']] ' + clean;
   sayProc = execFile('say', ['-v', voice, '-r', String(rate), tuned], (err) => {
-    if (err) { sayProc = execFile('say', ['-r', '190', clean], () => { onDone && onDone(); }); }
-    else { sayProc = null; onDone && onDone(); }
+    if (gen !== speakGen) return;   // killed/superseded → do NOT respawn a fallback voice
+    if (err) {                      // Daniel genuinely unavailable — one plain retry
+      sayProc = execFile('say', ['-r', '190', clean], () => { if (gen === speakGen) { sayProc = null; onDone && onDone(); } });
+    } else { sayProc = null; onDone && onDone(); }
   });
 }
 
-async function speakEleven(clean, cfg, onDone) {
+async function speakEleven(clean, cfg, gen, onDone) {
   const voice = cfg.elevenVoice || DEFAULT_ELEVEN_VOICE;
   const model = cfg.elevenModel || DEFAULT_ELEVEN_MODEL;
   const ac = new AbortController(); ttsAbort = ac;
@@ -379,31 +385,35 @@ async function speakEleven(clean, cfg, onDone) {
       }),
       signal: ac.signal,
     });
-    if (ttsAbort !== ac) return;                       // superseded by a newer utterance
+    if (gen !== speakGen) return;                      // a newer utterance took over
     if (!res.ok) { const t = await res.text().catch(() => ''); throw new Error('HTTP ' + res.status + ' ' + t.slice(0, 160)); }
     const buf = Buffer.from(await res.arrayBuffer());
-    if (ttsAbort !== ac) return;
+    if (gen !== speakGen) return;
     ttsAbort = null;
-    const tmp = path.join(os.tmpdir(), 'nexus-tts-' + Date.now() + '.mp3');
+    const tmp = path.join(os.tmpdir(), 'nexus-tts-' + gen + '-' + Date.now() + '.mp3');
     fs.writeFileSync(tmp, buf);
-    playProc = execFile('afplay', [tmp], () => { try { fs.unlinkSync(tmp); } catch (_) {} playProc = null; onDone && onDone(); });
+    playProc = execFile('afplay', [tmp], () => { try { fs.unlinkSync(tmp); } catch (_) {} if (gen === speakGen) { playProc = null; onDone && onDone(); } });
   } catch (err) {
-    if (ac.aborted) return;                            // intentionally stopped — don't fall back
+    if (ac.aborted || gen !== speakGen) return;        // intentionally stopped/superseded — no fallback
     ttsAbort = null;
     try { console.warn('[TTS] ElevenLabs failed, using system voice:', (err && err.message) || err); } catch (_) {}
-    speakSay(clean, onDone);                            // graceful degrade so Sea still speaks
+    speakSay(clean, gen, onDone);                       // graceful degrade so Sea still speaks
   }
 }
 
 function speak(text, onDone) {
-  stopSpeaking();
+  stopSpeaking();                 // kills anything playing + bumps the generation
+  const gen = speakGen;           // this utterance owns this generation
   const clean = (text || '').slice(0, 4000).replace(/\[\[/g, '').replace(/\]\]/g, '');
   if (!clean.trim()) { onDone && onDone(); return; }
   const cfg = loadConfig();
-  if (cfg.elevenKey) speakEleven(clean, cfg, onDone);
-  else speakSay(clean, onDone);
+  if (cfg.elevenKey) speakEleven(clean, cfg, gen, onDone);
+  else speakSay(clean, gen, onDone);
 }
 ipcMain.on('buddy:stopSpeaking', () => { stopSpeaking(); });
+
+// Only the newest request may speak — an older, slower reply must not talk over it.
+let askGen = 0;
 
 // --- Voice settings IPC (ElevenLabs key/voice/model + live test) -------------
 ipcMain.handle('voice:get', () => {
@@ -457,6 +467,7 @@ ipcMain.handle('stt:transcribe', async (_e, b64, mime) => {
 ipcMain.handle('orch:askVision', async (event, payload) => {
   const emit = (evt, p) => { try { event.sender.send('orch:' + evt, p); } catch (_) {} };
   if (!client) { emit('error', { message: 'Add your Anthropic API key first.' }); return { ok: false }; }
+  const myGen = ++askGen;
   const text = (payload && payload.text) || 'What do you see?';
   const img = (payload && payload.image) || '';
   const m = /^data:(image\/[a-zA-Z0-9.+-]+);base64,(.*)$/.exec(img);
@@ -474,6 +485,7 @@ ipcMain.handle('orch:askVision', async (event, payload) => {
     const msg = await stream.finalMessage();
     const finalText = msg.content.filter((b) => b.type === 'text').map((b) => b.text).join(' ').trim();
     recordExchange('[looked at my screen] ' + String(text), finalText);
+    if (myGen !== askGen) return { ok: true, text: finalText, superseded: true };  // newer request won
     emit('manager', { state: 'speaking' });
     if (finalText) emit('delta', { text: finalText });
     emit('answer', { text: finalText });
@@ -511,6 +523,7 @@ async function runSubAgent(id, task, emit) {
 ipcMain.handle('orch:ask', async (event, text) => {
   const emit = (evt, payload) => { try { event.sender.send('orch:' + evt, payload); } catch (_) {} };
   if (!client) { emit('error', { message: 'Add your Anthropic API key in Settings first.' }); return { ok: false }; }
+  const myGen = ++askGen;
 
   // Capture any keys typed in chat and save them to the vault (encrypted at rest).
   const scan = scanForSecrets(text);
@@ -592,6 +605,7 @@ ipcMain.handle('orch:ask', async (event, text) => {
     }
 
     recordExchange(userText, finalText);   // remember this turn for next time
+    if (myGen !== askGen) return { ok: true, text: finalText, superseded: true };  // a newer request took over — stay silent
     emit('manager', { state: 'speaking' });
     if (finalText) emit('delta', { text: finalText });
     emit('answer', { text: finalText });
