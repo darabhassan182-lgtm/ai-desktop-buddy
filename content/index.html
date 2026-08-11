@@ -1,71 +1,64 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Nexus</title>
-    <link rel="stylesheet" href="styles.css" />
-  </head>
-  <body>
-    <!-- ================= HUB (game-menu of sub-AIs) ================= -->
-    <section id="hub" class="view">
-      <header class="topbar">
-        <div class="brand"><span class="brand-mark">✦</span> Nexus <span class="ver" id="verTag"></span></div>
-        <div class="top-actions">
-          <button class="icon-btn" id="updateBtn" title="Check for updates">⟳</button>
-          <button class="icon-btn" id="hubSettings" title="Settings">⚙️</button>
-        </div>
-      </header>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="color-scheme" content="light dark" />
+  <title>Nexus</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <!-- Full-bleed game canvas behind everything -->
+  <canvas id="stage"></canvas>
 
-      <div class="hub-scroll">
-        <div class="hero">
-          <div class="hero-eyebrow">YOUR AI TEAM</div>
-          <h1>Pick a specialist</h1>
-          <p>Each one is a focused AI agent. Start with Scout — more are on the way.</p>
-        </div>
-        <div id="agentGrid" class="grid"></div>
-      </div>
-    </section>
-
-    <!-- ================= CHAT ================= -->
-    <section id="chat" class="view hidden">
-      <header class="topbar chat-top">
-        <button class="icon-btn" id="backBtn" title="Back">←</button>
-        <div class="chat-identity">
-          <span class="chat-avatar" id="chatAvatar">🔎</span>
-          <div>
-            <div class="chat-name" id="chatName">Scout</div>
-            <div class="chat-status" id="chatStatus">Ready</div>
-          </div>
-        </div>
-        <button class="icon-btn" id="chatSettings" title="Settings">⚙️</button>
-      </header>
-
-      <div id="transcript"></div>
-
-      <div id="composer">
-        <button class="icon-btn" id="micBtn" title="Speak">🎤</button>
-        <input id="input" type="text" placeholder="Ask anything…" />
-        <button id="sendBtn">Send</button>
-      </div>
-    </section>
-
-    <!-- ================= API KEY SETUP ================= -->
-    <div id="setup" class="hidden">
-      <div class="setup-card">
-        <div class="setup-avatar">✦</div>
-        <h2>Welcome to Nexus</h2>
-        <p>Paste your Anthropic API key to activate your AI team. It's stored only on this Mac.</p>
-        <input id="keyInput" type="password" placeholder="sk-ant-…" />
-        <button id="keySave">Save &amp; start</button>
-        <a id="keyLink" href="https://console.anthropic.com/settings/keys" target="_blank">Get a key →</a>
-        <div id="keyError"></div>
-      </div>
+  <!-- Draggable top bar -->
+  <header id="topbar">
+    <div class="brand" aria-label="Nexus">
+      <span class="brand-mark">✦</span>
+      <span class="brand-name">Nexus</span>
+      <span id="verTag" class="ver">v0.0.0</span>
     </div>
+    <div class="topbar-actions">
+      <button id="updateBtn" class="ghost-btn" type="button" title="Check for updates" aria-label="Check for updates">⟳</button>
+      <button id="settingsBtn" class="ghost-btn" type="button" title="Settings" aria-label="Settings">⚙️</button>
+    </div>
+  </header>
 
-    <div id="toast" class="hidden"></div>
+  <!-- Director's answer card -->
+  <section id="answerCard" aria-live="polite">
+    <span class="nova-dot" aria-hidden="true"></span>
+    <div id="answerText"></div>
+  </section>
 
-    <script type="module" src="voice.js"></script>
-    <script src="renderer.js"></script>
-  </body>
+  <!-- Transcript subtitle -->
+  <div id="subtitle" aria-live="polite"></div>
+
+  <!-- Floating glass command bar -->
+  <div id="commandBar" role="group" aria-label="Ask the Director">
+    <input id="command" type="text" autocomplete="off" spellcheck="false"
+           placeholder="Ask Nova anything…" aria-label="Command input" />
+    <button id="mic" class="round-btn" type="button" title="Voice" aria-label="Record voice">🎙️</button>
+    <button id="send" class="round-btn send" type="button" title="Send" aria-label="Send">➤</button>
+  </div>
+
+  <!-- Setup overlay -->
+  <div id="setup" aria-hidden="true">
+    <div class="setup-card" role="dialog" aria-modal="true" aria-labelledby="setupHeading">
+      <div class="setup-mark" aria-hidden="true">✦</div>
+      <h1 id="setupHeading">Welcome to Nexus</h1>
+      <p class="setup-sub">Add your API key to wake the office.</p>
+      <input id="keyInput" type="password" autocomplete="off" spellcheck="false"
+             placeholder="Paste your API key" aria-label="API key" />
+      <div id="keyError" role="alert"></div>
+      <button id="keySave" type="button">Save &amp; continue</button>
+    </div>
+  </div>
+
+  <!-- Transient toast -->
+  <div id="toast" role="status" aria-live="polite"></div>
+
+  <script type="module" src="voice.js"></script>
+  <script src="game.js"></script>
+  <script src="renderer.js"></script>
+</body>
 </html>
