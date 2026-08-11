@@ -37,15 +37,15 @@
     marketing: '#f59e0b', inbox: '#ec4899', api: '#22d3ee'
   };
   var AGENTS = {
-    manager:   { name: 'Agent Sea', accent: ACCENTS.manager,   bx: 24, by: 18, stamp: PALACE,     w: 7, h: 3 },
-    research:  { name: 'Scout',     accent: ACCENTS.research,   bx: 8,  by: 8,  stamp: HOUSE_GREY, w: 3, h: 3 },
-    inbox:     { name: 'Echo',      accent: ACCENTS.inbox,      bx: 45, by: 8,  stamp: HOUSE_RED,  w: 3, h: 3 },
-    docs:      { name: 'Quill',     accent: ACCENTS.docs,       bx: 8,  by: 33, stamp: HOUSE_RED,  w: 3, h: 3 },
-    marketing: { name: 'Spark',     accent: ACCENTS.marketing,  bx: 45, by: 33, stamp: HOUSE_GREY, w: 3, h: 3 },
-    api:       { name: 'Wire',      accent: ACCENTS.api,        bx: 26, by: 35, stamp: HOUSE_RED,  w: 3, h: 3 }
+    manager:   { name: 'Agent Sea', accent: ACCENTS.manager,   bx: 16, by: 12, stamp: PALACE,     w: 7, h: 3 },
+    research:  { name: 'Scout',     accent: ACCENTS.research,   bx: 5,  by: 5,  stamp: HOUSE_GREY, w: 3, h: 3 },
+    inbox:     { name: 'Echo',      accent: ACCENTS.inbox,      bx: 32, by: 5,  stamp: HOUSE_RED,  w: 3, h: 3 },
+    docs:      { name: 'Quill',     accent: ACCENTS.docs,       bx: 5,  by: 23, stamp: HOUSE_RED,  w: 3, h: 3 },
+    marketing: { name: 'Spark',     accent: ACCENTS.marketing,  bx: 32, by: 23, stamp: HOUSE_GREY, w: 3, h: 3 },
+    api:       { name: 'Wire',      accent: ACCENTS.api,        bx: 18, by: 24, stamp: HOUSE_RED,  w: 3, h: 3 }
   };
   var SPECIALISTS = ['research', 'inbox', 'docs', 'marketing', 'api'];
-  var MAPW = 58, MAPH = 46;
+  var MAPW = 40, MAPH = 30;
 
   /* ---------- state ---------- */
   var canvas, ctx, dpr = 1, cssW = 0, cssH = 0, running = false, time = 0;
@@ -114,11 +114,11 @@
     ground = new Array(MAPH);
     for (var y = 0; y < MAPH; y++) { ground[y] = new Array(MAPW); for (var x = 0; x < MAPW; x++) ground[y][x] = pick(GRASS); }
     // water: pond (left-centre) + waterfall feeding it from above
-    water = { px: 2, py: 20, pw: 8, ph: 8, fx: 5, fy0: 15 };
+    water = { px: 2, py: 14, pw: 5, ph: 5, fx: 3, fy0: 10 };
     // extra decorative houses
     extraHouses = [
-      { bx: 17, by: 7, stamp: HOUSE_RED, w: 3, h: 3 }, { bx: 38, by: 7, stamp: HOUSE_GREY, w: 3, h: 3 },
-      { bx: 40, by: 22, stamp: HOUSE_RED, w: 3, h: 3 }, { bx: 15, by: 40, stamp: HOUSE_GREY, w: 3, h: 3 }
+      { bx: 11, by: 6, stamp: HOUSE_RED, w: 3, h: 3 }, { bx: 26, by: 6, stamp: HOUSE_GREY, w: 3, h: 3 },
+      { bx: 28, by: 18, stamp: HOUSE_RED, w: 3, h: 3 }, { bx: 9, by: 26, stamp: HOUSE_GREY, w: 3, h: 3 }
     ];
     // roads: every specialist + extra house → the palace gate
     roads = []; roadSet = {};
@@ -126,11 +126,10 @@
     SPECIALISTS.forEach(function (id) { addRoad(gateTile(AGENTS[id]), pg); });
     // decor: trees, fences, stalls (avoid buildings, roads, water)
     decor = [];
-    for (var i = 0; i < 150; i++) {
+    for (var i = 0; i < 70; i++) {
       var tx = (Math.random() * MAPW) | 0, ty = (Math.random() * MAPH) | 0;
       if (nearBuilding(tx, ty, 1) || roadSet[tx + ',' + ty] || inWater(tx, ty)) continue;
-      var roll = Math.random();
-      decor.push({ t: roll < 0.08 ? STALL : pick(TREES), x: tx, y: ty });
+      decor.push({ t: pick(TREES), x: tx, y: ty });
     }
     decor.sort(function (a, b) { return a.y - b.y; });
     Object.keys(AGENTS).forEach(makeChar);
@@ -159,7 +158,7 @@
       c.wait -= dt;
       if (c.wait <= 0) {
         c.wait = rnd(1.2, 4);
-        var rad = c.isMgr ? 12 : 22;
+        var rad = c.isMgr ? 6 : 10;
         c.tx = clamp(c.hx + rnd(-rad, rad), TILE, (MAPW - 1) * TILE);
         c.ty = clamp(c.hy + rnd(-rad, rad), TILE, (MAPH - 1) * TILE);
         c.moving = true;
@@ -192,7 +191,7 @@
   /* ---------- render ---------- */
   function clampCam() {
     var halfW = cssW / 2 / cam.z, halfH = cssH / 2 / cam.z;
-    cam.tz = clamp(cam.tz, 1.6, 6); cam.z = clamp(cam.z, 1.6, 6);
+    cam.tz = clamp(cam.tz, 2.6, 8); cam.z = clamp(cam.z, 2.6, 8);
     cam.tx = clamp(cam.tx, halfW, MAPW * TILE - halfW); cam.ty = clamp(cam.ty, halfH, MAPH * TILE - halfH);
     cam.x = clamp(cam.x, halfW, MAPW * TILE - halfW); cam.y = clamp(cam.y, halfH, MAPH * TILE - halfH);
   }
@@ -298,7 +297,7 @@
     canvas.addEventListener('mousedown', function (e) { dragging = true; lx = e.clientX; ly = e.clientY; cam.follow = null; canvas.style.cursor = 'grabbing'; });
     window.addEventListener('mouseup', function () { dragging = false; if (canvas) canvas.style.cursor = 'grab'; });
     window.addEventListener('mousemove', function (e) { if (!dragging) return; cam.tx -= (e.clientX - lx) / cam.z; cam.ty -= (e.clientY - ly) / cam.z; cam.x = cam.tx; cam.y = cam.ty; lx = e.clientX; ly = e.clientY; clampCam(); });
-    canvas.addEventListener('wheel', function (e) { e.preventDefault(); cam.tz = clamp(cam.tz * (e.deltaY < 0 ? 1.12 : 0.9), 1.6, 6); }, { passive: false });
+    canvas.addEventListener('wheel', function (e) { e.preventDefault(); cam.tz = clamp(cam.tz * (e.deltaY < 0 ? 1.12 : 0.9), 2.6, 8); }, { passive: false });
     window.addEventListener('keydown', function (e) { keys[(e.key || '').toLowerCase()] = true; });
     window.addEventListener('keyup', function (e) { keys[(e.key || '').toLowerCase()] = false; });
     canvas.style.cursor = 'grab';
@@ -310,7 +309,7 @@
       try {
         canvas = el || document.getElementById('stage'); if (!canvas) return;
         ctx = canvas.getContext('2d'); doResize(); buildTown();
-        var d = doorWorld(AGENTS.manager); cam.x = cam.tx = d.x; cam.y = cam.ty = d.y - 12; cam.z = cam.tz = 2.6; clampCam();
+        var d = doorWorld(AGENTS.manager); cam.x = cam.tx = d.x; cam.y = cam.ty = d.y - 8; cam.z = cam.tz = 4.4; clampCam();
         bindInput(); window.addEventListener('resize', doResize);
         running = true; lastT = performance.now(); requestAnimationFrame(frame);
       } catch (e) { try { console.warn('[World] init failed', e); } catch (_) {} }
@@ -326,7 +325,7 @@
     dispatch: function (id) { var a = AGENTS[id], m = chars.manager; if (!a || !m || id === 'manager') return; var d = doorWorld(a); spawnOrb(m.x, m.y - 12, d.x, d.y - 8, a.accent, null); },
     deliver: function (id) { var c = chars[id]; if (!c || id === 'manager') return; if (c.state !== 'delivering' && chars.manager) spawnOrb(c.x, c.y - 10, chars.manager.x, chars.manager.y - 12, c.accent, null); },
     speak: function (id, on) { var c = chars[id === 'manager' ? 'manager' : id]; if (!c || !on) return; c.hop = 1; bubble(c, '♪'); },
-    focus: function (id) { if (id && chars[id]) { cam.follow = id; cam.tz = 3.8; } else { cam.follow = null; cam.tz = 2.6; var d = doorWorld(AGENTS.manager); cam.tx = d.x; cam.ty = d.y - 12; } },
+    focus: function (id) { if (id && chars[id]) { cam.follow = id; cam.tz = 5.4; } else { cam.follow = null; cam.tz = 4.4; var d = doorWorld(AGENTS.manager); cam.tx = d.x; cam.ty = d.y - 8; } },
     resize: function () { doResize(); }
   };
   window.World = API;
