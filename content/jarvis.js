@@ -16,7 +16,7 @@
   var audioCtx = null, analyser = null, freqData = null, rafId = 0;
   // VAD thresholds (amp is 0..1). Tuned for close talking.
   var START_AMP = 0.075, SILENCE_AMP = 0.05, SILENCE_HANG = 750, MIN_UTTER = 350, MAX_UTTER = 12000;
-  var capturing = false, captureStart = 0, silenceStart = 0, aborted = false;
+  var capturing = false, captureStart = 0, silenceStart = 0, aborted = false, captureDuringSpeech = false;
 
   function startMeter(stream) {
     try {
@@ -39,17 +39,20 @@
   function stopMeter() { if (rafId) cancelAnimationFrame(rafId); rafId = 0; try { audioCtx && audioCtx.close(); } catch (e) {} audioCtx = null; analyser = null; W('setLevel', 0); }
 
   // Detect an utterance: start when you begin talking, stop after a short pause.
+  // While Sea is speaking we still listen (higher gate) but only act on "stop".
   function handleVAD(amp) {
     if (!listening) return;
     var now = Date.now();
-    if (seaBusy()) { if (capturing) endCapture(true); return; }  // don't hear Sea's own voice
+    var duringSpeech = seaBusy();
+    var startT = duringSpeech ? START_AMP * 2.2 : START_AMP;  // avoid triggering on Sea's own bleed
     if (!capturing) {
-      if (amp >= START_AMP) beginCapture();
+      if (amp >= startT) beginCapture(duringSpeech);
     } else {
       if (amp >= SILENCE_AMP) silenceStart = 0;
       else if (!silenceStart) silenceStart = now;
       var dur = now - captureStart, sil = silenceStart ? now - silenceStart : 0;
-      if ((sil >= SILENCE_HANG && dur >= MIN_UTTER) || dur >= MAX_UTTER) endCapture(false);
+      var maxU = captureDuringSpeech ? 2600 : MAX_UTTER;   // mid-speech we only need a short "stop"
+      if ((sil >= SILENCE_HANG && dur >= MIN_UTTER) || dur >= maxU) endCapture(false);
     }
   }
 
@@ -81,17 +84,18 @@
     return t.slice(m[0].length).trim();
   }
 
-  function beginCapture() {
+  function beginCapture(duringSpeech) {
     if (!loopStream) return;
     try { rec = new MediaRecorder(loopStream); } catch (e) { return; }
-    chunks = []; aborted = false; capturing = true; captureStart = Date.now(); silenceStart = 0;
+    chunks = []; aborted = false; capturing = true; captureDuringSpeech = !!duringSpeech; captureStart = Date.now(); silenceStart = 0;
     rec.ondataavailable = function (e) { if (e.data && e.data.size) chunks.push(e.data); };
     rec.onstop = function () {
       capturing = false;
+      var during = captureDuringSpeech;
       if (aborted || !listening) return;
       var blob = new Blob(chunks, { type: (rec && rec.mimeType) || 'audio/webm' });
       if (!blob.size) return;
-      gateAndHandle(blob);
+      gateAndHandle(blob, during);
     };
     try { rec.start(); } catch (e) { capturing = false; }
   }
@@ -119,22 +123,38 @@
     loopStream = null; stopMeter(); W('setListening', false);
   }
 
+  // "stop" barge-in words (with an optional leading "Sea").
+  function isStop(text) {
+    var t = String(text || '').trim().toLowerCase().replace(/^[,.\s"']+/, '');
+    t = t.replace(/^(hey\s+|ok\s+|okay\s+)?(sea|jarvis|cea|see|sia)\b[\s,.:!?-]*/, '');
+    return /^(stop|stop it|stop talking|stop please|please stop|quiet|be quiet|silence|shush|shut up|enough|that'?s enough|cancel|halt|pause)\b/.test(t.trim());
+  }
+  function doStop() {
+    try { nx.stopSpeaking && nx.stopSpeaking(); } catch (e) {}
+    W('setManager', 'idle');
+    keepAwake();                 // stay in the conversation so a new command can follow
+    toast('Stopped.');
+  }
+
   // Speaker gate: if "only obey my voice" is on, verify the utterance is the
-  // owner before transcribing/acting. Fail-open (verify returns match on error).
-  function gateAndHandle(blob) {
+  // owner before acting. During Sea's speech we skip the gate for a fast "stop".
+  function gateAndHandle(blob, duringSpeech) {
+    if (duringSpeech) { transcribeAndHandle(blob, true); return; }
     var vid = window.NexusVoiceID;
     if (vid && vid.isEnabled && vid.isEnabled()) {
       Promise.resolve(vid.verify(blob)).then(function (res) {
-        if (!res || res.match) transcribeAndHandle(blob);   // owner (or fail-open)
+        if (!res || res.match) transcribeAndHandle(blob, false);   // owner (or fail-open)
         // else: not the owner's voice → ignore silently
-      }).catch(function () { transcribeAndHandle(blob); });
+      }).catch(function () { transcribeAndHandle(blob, false); });
     } else {
-      transcribeAndHandle(blob);
+      transcribeAndHandle(blob, false);
     }
   }
-  function transcribeAndHandle(blob) {
+  function transcribeAndHandle(blob, duringSpeech) {
     Promise.resolve(window.NexusVoice.transcribe(blob)).then(function (text) {
-      if (text) handleHeard(text);
+      if (!text) return;
+      if (duringSpeech) { if (isStop(text)) doStop(); return; }   // mid-speech: only "stop" acts
+      handleHeard(text);
     }).catch(function () {});
   }
 
@@ -154,6 +174,7 @@
     }
     keepAwake();
     if (!cmd) { toast('Yes?'); return; }                     // just "Sea" → wait for the command
+    if (isStop(cmd)) { doStop(); return; }                   // "Sea, stop" with nothing playing is harmless
     var sub = $('subtitle'); if (sub) { sub.textContent = cmd; sub.classList.add('show'); }
     if (/\b(screen|see this|look at|on my screen|what'?s on|read this)\b/i.test(cmd)) askVision(cmd);
     else { try { nx.stopSpeaking && nx.stopSpeaking(); } catch (e) {} try { nx.ask(cmd); } catch (e) {} }
