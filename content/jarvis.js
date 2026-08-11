@@ -50,27 +50,27 @@
   // While Sea is speaking we still listen (higher gate) but only act on "stop".
   function handleVAD(amp) {
     if (!listening) return;
+    // FULLY DEAF while Sea is speaking (and for the cooldown after) — it can never
+    // capture its own voice and reply to itself. Interrupt with the 🎙️ button instead.
+    if (seaBusy()) { if (capturing) endCapture(true); return; }
     var now = Date.now();
-    var duringSpeech = seaBusy();
     var startT = Math.max(noiseFloor + START_MARGIN, noiseFloor * START_MULT, START_MIN);  // adaptive entry gate
-    var entryT = duringSpeech ? Math.max(startT * SPEECH_MULT, SPEECH_MIN) : startT;       // raise gate vs Sea's bleed
-    // Learn the ambient floor only when idle AND quiet (never fold speech/Sea into it).
-    if (!capturing && !duringSpeech && amp < startT) {
+    // Learn the ambient floor only when idle AND quiet (never fold speech into it).
+    if (!capturing && amp < startT) {
       noiseFloor += FLOOR_ALPHA * (amp - noiseFloor);
       if (noiseFloor < 0.004) noiseFloor = 0.004; else if (noiseFloor > 0.12) noiseFloor = 0.12;
     }
     if (!capturing) {
-      if (amp >= entryT) { beginCapture(duringSpeech); speechPeak = amp; }
+      if (amp >= startT) { beginCapture(false); speechPeak = amp; }
     } else {
       // Endpoint RELATIVE to how loud YOU just were, so stopping is detected even if
-      // auto-gain / background keeps some noise present (fixes "doesn't stop listening").
+      // background keeps some noise present (fixes "doesn't stop listening").
       speechPeak = Math.max(amp, speechPeak * 0.992);
       var silenceT = Math.max(noiseFloor + 0.010, speechPeak * 0.35);
       if (amp >= silenceT) silenceStart = 0;
       else if (!silenceStart) silenceStart = now;
       var dur = now - captureStart, sil = silenceStart ? now - silenceStart : 0;
-      var maxU = captureDuringSpeech ? 2600 : MAX_UTTER;   // mid-speech we only need a short "stop"
-      if ((sil >= SILENCE_HANG && dur >= MIN_UTTER) || dur >= maxU) endCapture(false);
+      if ((sil >= SILENCE_HANG && dur >= MIN_UTTER) || dur >= MAX_UTTER) endCapture(false);
     }
   }
 
@@ -84,7 +84,7 @@
     if (nx && typeof nx.on === 'function') nx.on('manager', function (p) {
       var st = p && p.state;
       if (st === 'speaking') seaSpeaking = true;
-      else { if (seaSpeaking) speakCooldownUntil = Date.now() + 900; seaSpeaking = false; }
+      else { if (seaSpeaking) speakCooldownUntil = Date.now() + 1200; seaSpeaking = false; }
     });
   } catch (e) {}
   function seaBusy() { return seaSpeaking || Date.now() < speakCooldownUntil; }
