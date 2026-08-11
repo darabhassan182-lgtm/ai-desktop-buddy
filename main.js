@@ -2,6 +2,7 @@
 const { app, BrowserWindow, ipcMain, session, safeStorage, desktopCapturer } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 const { execFile } = require('child_process');
 
 require('dotenv').config({ path: path.join(__dirname, '.env') });
@@ -224,7 +225,7 @@ function cmpVersions(a, b) {
   for (let i = 0; i < 3; i++) { const d = (pa[i] || 0) - (pb[i] || 0); if (d) return d > 0 ? 1 : -1; }
   return 0;
 }
-const CONTENT_FILES = ['index.html', 'styles.css', 'renderer.js', 'voice.js', 'game.js', 'memory.js', 'memory.css', 'jarvis.js', 'jarvis.css', 'display.js', 'display.css', 'leaflet.js', 'leaflet.css', 'manifest.json'];
+const CONTENT_FILES = ['index.html', 'styles.css', 'renderer.js', 'voice.js', 'game.js', 'memory.js', 'memory.css', 'jarvis.js', 'jarvis.css', 'display.js', 'display.css', 'voice-ui.js', 'leaflet.js', 'leaflet.css', 'manifest.json'];
 function syncBundledContent() {
   const src = bundledContentDir(), dst = userContentDir();
   const bundled = readManifest(src), user = readManifest(dst);
@@ -311,24 +312,100 @@ ipcMain.handle('memory:deleteSecret', (_e, name) => deleteSecret(name));
 ipcMain.handle('memory:encAvailable', () => encAvailable());
 
 // --- Text-to-speech ---------------------------------------------------------
-let sayProc = null;
-function speak(text, onDone) {
-  if (sayProc) { try { sayProc.kill(); } catch (_) {} }
-  let clean = (text || '').slice(0, 4000).replace(/\[\[/g, '').replace(/\]\]/g, ''); // strip embedded-command syntax
-  if (!clean) { onDone && onDone(); return; }
+// Two engines: (1) ElevenLabs neural TTS — a true cinematic "Jarvis" voice, used
+// whenever an ElevenLabs key is configured; (2) macOS `say` (pitch-tuned Daniel)
+// as an always-available fallback. Any ElevenLabs failure degrades to `say`.
+const DEFAULT_ELEVEN_VOICE = 'onwK4e9ZLuTAKqWW03F9';   // "Daniel — Steady Broadcaster" (British, composed)
+const DEFAULT_ELEVEN_MODEL = 'eleven_multilingual_v2'; // most cinematic; flash_v2_5 is the low-latency option
+let sayProc = null, playProc = null, ttsAbort = null;
+
+function stopSpeaking() {
+  if (sayProc) { try { sayProc.kill(); } catch (_) {} sayProc = null; }
+  if (playProc) { try { playProc.kill(); } catch (_) {} playProc = null; }
+  if (ttsAbort) { try { ttsAbort.abort(); } catch (_) {} ttsAbort = null; }
+}
+
+function speakSay(clean, onDone) {
   const cfg = loadConfig();
-  const voice = cfg.voice || 'Daniel';                 // refined British "Jarvis" voice (macOS built-in)
-  const rate  = cfg.voiceRate  != null ? cfg.voiceRate  : 178;  // words/min — deliberate, composed
-  const pitch = cfg.voicePitch != null ? cfg.voicePitch : 28;   // pitch baseline — lower = deeper (Daniel default ~34)
-  const pmod  = cfg.voicePmod  != null ? cfg.voicePmod  : 22;   // pitch modulation — lower = flatter/sharper, more machine-like
-  // Embedded speech commands tune Daniel into a deeper, crisper "Jarvis" register.
+  const voice = cfg.voice || 'Daniel';
+  const rate  = cfg.voiceRate  != null ? cfg.voiceRate  : 178;
+  const pitch = cfg.voicePitch != null ? cfg.voicePitch : 28;
+  const pmod  = cfg.voicePmod  != null ? cfg.voicePmod  : 22;
   const tuned = '[[pbas ' + pitch + ']] [[pmod ' + pmod + ']] ' + clean;
   sayProc = execFile('say', ['-v', voice, '-r', String(rate), tuned], (err) => {
     if (err) { sayProc = execFile('say', ['-r', '190', clean], () => { onDone && onDone(); }); }
-    else { onDone && onDone(); }
+    else { sayProc = null; onDone && onDone(); }
   });
 }
-ipcMain.on('buddy:stopSpeaking', () => { if (sayProc) { try { sayProc.kill(); } catch (_) {} } });
+
+async function speakEleven(clean, cfg, onDone) {
+  const voice = cfg.elevenVoice || DEFAULT_ELEVEN_VOICE;
+  const model = cfg.elevenModel || DEFAULT_ELEVEN_MODEL;
+  const ac = new AbortController(); ttsAbort = ac;
+  try {
+    const res = await fetch('https://api.elevenlabs.io/v1/text-to-speech/' + voice + '?output_format=mp3_44100_128', {
+      method: 'POST',
+      headers: { 'xi-api-key': cfg.elevenKey, 'Content-Type': 'application/json', 'Accept': 'audio/mpeg' },
+      body: JSON.stringify({
+        text: clean, model_id: model,
+        voice_settings: { stability: 0.55, similarity_boost: 0.8, style: 0.0, use_speaker_boost: true },
+      }),
+      signal: ac.signal,
+    });
+    if (ttsAbort !== ac) return;                       // superseded by a newer utterance
+    if (!res.ok) { const t = await res.text().catch(() => ''); throw new Error('HTTP ' + res.status + ' ' + t.slice(0, 160)); }
+    const buf = Buffer.from(await res.arrayBuffer());
+    if (ttsAbort !== ac) return;
+    ttsAbort = null;
+    const tmp = path.join(os.tmpdir(), 'nexus-tts-' + Date.now() + '.mp3');
+    fs.writeFileSync(tmp, buf);
+    playProc = execFile('afplay', [tmp], () => { try { fs.unlinkSync(tmp); } catch (_) {} playProc = null; onDone && onDone(); });
+  } catch (err) {
+    if (ac.aborted) return;                            // intentionally stopped — don't fall back
+    ttsAbort = null;
+    try { console.warn('[TTS] ElevenLabs failed, using system voice:', (err && err.message) || err); } catch (_) {}
+    speakSay(clean, onDone);                            // graceful degrade so Sea still speaks
+  }
+}
+
+function speak(text, onDone) {
+  stopSpeaking();
+  const clean = (text || '').slice(0, 4000).replace(/\[\[/g, '').replace(/\]\]/g, '');
+  if (!clean.trim()) { onDone && onDone(); return; }
+  const cfg = loadConfig();
+  if (cfg.elevenKey) speakEleven(clean, cfg, onDone);
+  else speakSay(clean, onDone);
+}
+ipcMain.on('buddy:stopSpeaking', () => { stopSpeaking(); });
+
+// --- Voice settings IPC (ElevenLabs key/voice/model + live test) -------------
+ipcMain.handle('voice:get', () => {
+  const c = loadConfig();
+  return { hasElevenKey: !!c.elevenKey, voice: c.elevenVoice || DEFAULT_ELEVEN_VOICE, model: c.elevenModel || DEFAULT_ELEVEN_MODEL };
+});
+ipcMain.handle('voice:setKey', (_e, key) => {
+  const c = loadConfig(); const t = String(key || '').trim();
+  if (t) c.elevenKey = t; else delete c.elevenKey;
+  saveConfig(c); return { ok: true, hasElevenKey: !!c.elevenKey };
+});
+ipcMain.handle('voice:setVoice', (_e, id) => { const c = loadConfig(); const t = String(id || '').trim(); if (t) c.elevenVoice = t; saveConfig(c); return true; });
+ipcMain.handle('voice:setModel', (_e, m) => { const c = loadConfig(); const t = String(m || '').trim(); if (t) c.elevenModel = t; saveConfig(c); return true; });
+ipcMain.handle('voice:listVoices', async () => {
+  const c = loadConfig(); if (!c.elevenKey) return { ok: false, error: 'No ElevenLabs key set.' };
+  try {
+    const res = await fetch('https://api.elevenlabs.io/v1/voices', { headers: { 'xi-api-key': c.elevenKey } });
+    if (!res.ok) return { ok: false, error: 'HTTP ' + res.status };
+    const d = await res.json();
+    const voices = (d.voices || []).map((v) => ({ id: v.voice_id, name: v.name, labels: v.labels || {} }));
+    return { ok: true, voices };
+  } catch (e) { return { ok: false, error: (e && e.message) || String(e) }; }
+});
+ipcMain.handle('voice:test', (e) => {
+  const emit = (evt, p) => { try { e.sender.send('orch:' + evt, p); } catch (_) {} };
+  emit('manager', { state: 'speaking' });
+  speak('Good evening, sir. All systems are online, and your specialists are standing by.', () => emit('manager', { state: 'idle' }));
+  return { ok: true };
+});
 
 // --- Vision: Sea looks at a captured image (screen/camera) and answers ------
 ipcMain.handle('orch:askVision', async (event, payload) => {

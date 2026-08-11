@@ -25,6 +25,7 @@
     <div class="topbar-actions">
       <button id="jarvisBtn" class="ghost-btn" type="button" title="Hands-free — say &quot;Sea, …&quot;" aria-label="Hands-free">🎧</button>
       <button id="visionBtn" class="ghost-btn" type="button" title="Let Sea see your screen" aria-label="Vision">👁️</button>
+      <button id="voiceBtn" class="ghost-btn" type="button" title="Sea's voice" aria-label="Voice settings">🔊</button>
       <button id="memoryBtn" class="ghost-btn" type="button" title="Memory" aria-label="Memory">🧠</button>
       <button id="updateBtn" class="ghost-btn" type="button" title="Check for updates" aria-label="Check for updates">⟳</button>
       <button id="settingsBtn" class="ghost-btn" type="button" title="Settings" aria-label="Settings">⚙️</button>
@@ -58,6 +59,30 @@
              placeholder="Paste your API key" aria-label="API key" />
       <div id="keyError" role="alert"></div>
       <button id="keySave" type="button">Save &amp; continue</button>
+    </div>
+  </div>
+
+  <!-- Voice settings modal -->
+  <div id="voiceModal" aria-hidden="true">
+    <div class="setup-card voice-card" role="dialog" aria-modal="true" aria-labelledby="voiceHeading">
+      <div class="setup-mark" aria-hidden="true">🔊</div>
+      <h1 id="voiceHeading">Sea's Voice</h1>
+      <p class="setup-sub">A cinematic Jarvis voice via ElevenLabs. Pick a voice and press Test.</p>
+      <label class="voice-label" for="voiceKey">ElevenLabs API key</label>
+      <input id="voiceKey" type="password" autocomplete="off" spellcheck="false" placeholder="sk_… (stored only on this Mac)" />
+      <div id="voiceKeyState" class="voice-state"></div>
+      <label class="voice-label" for="voiceSelect">Voice</label>
+      <select id="voiceSelect" class="voice-select"></select>
+      <label class="voice-label" for="voiceModelSelect">Style</label>
+      <select id="voiceModelSelect" class="voice-select">
+        <option value="eleven_multilingual_v2">Cinematic (richest, slight delay)</option>
+        <option value="eleven_flash_v2_5">Fast (snappier reply)</option>
+      </select>
+      <div class="voice-actions">
+        <button id="voiceTest" type="button" class="voice-btn-secondary">▶ Test voice</button>
+        <button id="voiceDone" type="button">Done</button>
+      </div>
+      <p class="voice-foot">Free ElevenLabs plan works for testing. If the key is empty, Sea falls back to the built-in Mac voice.</p>
     </div>
   </div>
 
@@ -100,6 +125,7 @@
   <script src="display.js"></script>
   <script src="renderer.js"></script>
   <script src="memory.js"></script>
+  <script src="voice-ui.js"></script>
   <script src="jarvis.js"></script>
 </body>
 </html>

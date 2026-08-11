@@ -22,4 +22,13 @@ contextBridge.exposeInMainWorld('nexus', {
     deleteSecret: (name) => ipcRenderer.invoke('memory:deleteSecret', name),
     encAvailable: () => ipcRenderer.invoke('memory:encAvailable'),
   },
+  // Voice (ElevenLabs cinematic TTS): key never returned to the renderer
+  voice: {
+    get: () => ipcRenderer.invoke('voice:get'),
+    setKey: (key) => ipcRenderer.invoke('voice:setKey', key),
+    setVoice: (id) => ipcRenderer.invoke('voice:setVoice', id),
+    setModel: (m) => ipcRenderer.invoke('voice:setModel', m),
+    listVoices: () => ipcRenderer.invoke('voice:listVoices'),
+    test: () => ipcRenderer.invoke('voice:test'),
+  },
 });
