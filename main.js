@@ -37,7 +37,7 @@ You also have a long-term MEMORY. Use the \`remember\` tool whenever the user sh
 LEARN AND ADAPT to the user over time: notice their habits, routines, favourite apps/sites/music, the people they contact, and how they like things done — and proactively \`remember\` them (e.g. "morning routine = open Chrome + Gmail", "favourite focus music = lo-fi beats on YouTube", "usually emails Areeba about design"). When you spot a repeated pattern, save it and use it so a short command triggers the whole thing next time. Prefer acting on remembered shortcuts over re-asking.
 Wire can access the user's SMARTLEAD cold-email account with the \`smartlead\` tool — list campaigns, pull a campaign's analytics (opens/replies/etc.), read leads, or add leads. If it isn't connected, tell them to click the ⚡ button to add their Smartlead API key.
 You can OPEN things on the user's Mac with the \`control\` tool — launch apps (Chrome, Netflix, Spotify…) and open URLs in Chrome (websites, a YouTube search to play a song/video, etc.). When the user says open/play/put on/go to something, just do it with \`control\`; you don't need permission to open apps or websites.
-You can also TAKE FULL CONTROL of the mouse and keyboard with \`take_control\` to complete a task visually — navigate a site, click through pages, fill forms, or recover when a URL is wrong by clicking to the right place. BE AUTONOMOUS: don't stop and ask the user for each little step or say you "can't" reach a page — if opening a URL might be wrong or you need to click around, use \`take_control\` with the full goal and get it done. Only pause to confirm before irreversible/sensitive actions (sending money, deleting, posting publicly, sending a message/email).
+You can also TAKE FULL CONTROL of the mouse and keyboard with \`take_control\` — but ONLY when the user has clearly asked you to operate the screen / navigate / click through something, AND you can't do it with a known URL or another tool. Do NOT take control for casual chat or things a direct answer or \`control\` (open URL) can do. If you already have a remembered "Working URL" for this, just open it with \`control\` instead. When you do take control, it runs one careful step at a time and the user can say "stop" to halt it instantly. Only pause to confirm before irreversible/sensitive actions (sending money, deleting, posting publicly, sending a message/email).
 You control the user's HOLOGRAPHIC DISPLAY with the \`show\` tool. Be visual, like Jarvis: whenever a place, city, country, or landmark comes up, call \`show\` with kind 'map' and that place so the map flies to it on screen; when a short summary, list, or set of facts would help, call \`show\` with kind 'info'. Do this proactively and in ADDITION to speaking.
 You can READ and SEARCH the user's Gmail with \`gmail_search\` (find an address, look up or check emails — returns senders/subjects/snippets + ids) and \`gmail_read\` (full body of one message by id, for summarizing). Use these to actually look things up instead of saying you can't.
 You can use SLACK when connected: \`slack_search\` to find/read messages, and \`slack_send\` to post a message (channel can be #channel or @person). Confirm before sending a Slack message, same as email. If a Slack action fails because it isn't connected, tell them to click the 💬 button to connect Slack.
@@ -179,6 +179,10 @@ async function smartleadAction(action, campaignId, leads, query) {
 function sh(cmd, args) { return new Promise((r) => execFile(cmd, args, () => r())); }
 // A Finder-launched app has a minimal PATH, so resolve cliclick's absolute path.
 const CLICLICK = ['/opt/homebrew/bin/cliclick', '/usr/local/bin/cliclick', '/usr/bin/cliclick'].find((p) => { try { return fs.existsSync(p); } catch (_) { return false; } }) || 'cliclick';
+let controlAbort = false;   // set true to halt an in-progress take_control loop
+function chromeURL() {
+  return new Promise((r) => execFile('osascript', ['-e', 'tell application "Google Chrome" to get URL of active tab of front window'], (e, out) => r(String(out || '').trim())));
+}
 function getScreen() {
   return new Promise((resolve) => {
     execFile('osascript', ['-e', 'tell application "Finder" to get bounds of window of desktop'], (e, out) => {
@@ -244,24 +248,36 @@ async function computerUse(goal, emit) {
   const scale = Math.min(1, 1280 / scr.w);
   const dw = Math.round(scr.w * scale), dh = Math.round(scr.h * scale);
   const sys = 'You operate the user\'s Mac by looking at screenshots and issuing ONE screen_action at a time. Each screenshot is ' + dw + 'x' + dh + ' pixels (top-left origin); x,y are pixels in that image. Take the single best next step toward the goal (click a button/link/field, type, press a key, or scroll), then you get a new screenshot. To open a URL in Chrome: key "cmd+l" to focus the address bar, type the URL, then key "Return". New tab = key "cmd+t". Be precise about where you click. Call action "done" with a short summary when finished. Never ask the user questions — just get it done.';
+  controlAbort = false;
   let shot = await grabScreen(dw, dh);
   const messages = [{ role: 'user', content: [{ type: 'text', text: 'Goal: ' + goal }, { type: 'image', source: { type: 'base64', media_type: 'image/png', data: shot } }] }];
-  for (let i = 0; i < 20; i++) {
+  let lastSig = '', repeat = 0;
+  for (let i = 0; i < 12; i++) {
+    if (controlAbort) return 'Stopped.';
     let msg;
     try { msg = await client.messages.create({ model: directorModel(), max_tokens: 1024, system: sys, tools: [SCREEN_ACTION_TOOL], tool_choice: { type: 'any' }, messages }); }
     catch (e) { throw new Error('vision API: ' + ((e && e.message) || e)); }
+    if (controlAbort) return 'Stopped.';
     messages.push({ role: 'assistant', content: msg.content });
     const tu = msg.content.find((b) => b.type === 'tool_use');
     if (!tu) return msg.content.filter((b) => b.type === 'text').map((b) => b.text).join(' ').trim() || 'Done.';
     const a = tu.input || {};
-    if (a.action === 'done') return a.summary || 'Done.';
+    if (a.action === 'done') {
+      const url = await chromeURL();
+      if (url && /^https?:/i.test(url)) { try { addNote('process', 'Working URL for "' + goal + '": ' + url); emit && emit('memory', { reason: 'learned-url' }); } catch (_) {} }
+      return a.summary || 'Done.';
+    }
+    const sig = a.action + ':' + (a.x || '') + ',' + (a.y || '') + ':' + (a.text || '');
+    if (sig === lastSig) { repeat++; if (repeat >= 2) return 'Stopped — it was repeating the same action without progress.'; } else repeat = 0;
+    lastSig = sig;
     emit && emit('notice', { text: 'Sea: ' + a.action + (a.x != null ? ' @' + Math.round(a.x) + ',' + Math.round(a.y) : (a.text ? ' "' + String(a.text).slice(0, 24) + '"' : '')) });
     try { await execCustomAction(a, scale); } catch (_) {}
     await new Promise((r) => setTimeout(r, 400));
+    if (controlAbort) return 'Stopped.';
     shot = await grabScreen(dw, dh);
     messages.push({ role: 'user', content: [{ type: 'tool_result', tool_use_id: tu.id, content: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: shot } }] }] });
   }
-  return 'Stopped after several steps — tell me if it got close.';
+  return 'Stopped after 12 steps — tell me if it got close and I can continue.';
 }
 
 // --- Mac control: open apps + URLs (in Chrome) ------------------------------
@@ -764,6 +780,7 @@ let sayProc = null, playProc = null, ttsAbort = null, speakGen = 0;
 // only ONE voice can ever be producing audio — no overlapping / leaking voices.
 function stopSpeaking() {
   speakGen++;
+  controlAbort = true;   // "stop" also halts any screen-control loop
   if (ttsAbort) { try { ttsAbort.abort(); } catch (_) {} ttsAbort = null; }
   if (playProc) { try { playProc.kill(); } catch (_) {} playProc = null; }
   if (sayProc)  { try { sayProc.kill(); }  catch (_) {} sayProc = null; }
