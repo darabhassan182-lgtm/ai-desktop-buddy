@@ -36,6 +36,12 @@ contextBridge.exposeInMainWorld('nexus', {
     set: (token) => ipcRenderer.invoke('slack:set', token),
     test: () => ipcRenderer.invoke('slack:test'),
   },
+  // Smartlead (API key stored locally; never returned)
+  smartlead: {
+    get: () => ipcRenderer.invoke('smartlead:get'),
+    set: (key) => ipcRenderer.invoke('smartlead:set', key),
+    test: () => ipcRenderer.invoke('smartlead:test'),
+  },
   // Voice (ElevenLabs cinematic TTS): key never returned to the renderer
   voice: {
     get: () => ipcRenderer.invoke('voice:get'),

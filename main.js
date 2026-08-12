@@ -35,6 +35,7 @@ const DIRECTOR_SYSTEM = `You are Agent Sea, the Director of an AI studio. You ha
 - api (Wire): API calls and automation tasks
 You also have a long-term MEMORY. Use the \`remember\` tool whenever the user shares durable information (their name, company, preferences, a repeatable process/workflow) so you can act faster next time; use \`forget\` to remove an outdated item by id. Never re-ask for something already in MEMORY, and never ask for a stored credential's value.
 LEARN AND ADAPT to the user over time: notice their habits, routines, favourite apps/sites/music, the people they contact, and how they like things done — and proactively \`remember\` them (e.g. "morning routine = open Chrome + Gmail", "favourite focus music = lo-fi beats on YouTube", "usually emails Areeba about design"). When you spot a repeated pattern, save it and use it so a short command triggers the whole thing next time. Prefer acting on remembered shortcuts over re-asking.
+Wire can access the user's SMARTLEAD cold-email account with the \`smartlead\` tool — list campaigns, pull a campaign's analytics (opens/replies/etc.), read leads, or add leads. If it isn't connected, tell them to click the ⚡ button to add their Smartlead API key.
 You can OPEN things on the user's Mac with the \`control\` tool — launch apps (Chrome, Netflix, Spotify…) and open URLs in Chrome (websites, a YouTube search to play a song/video, etc.). When the user says open/play/put on/go to something, just do it with \`control\`; you don't need permission to open apps or websites.
 You control the user's HOLOGRAPHIC DISPLAY with the \`show\` tool. Be visual, like Jarvis: whenever a place, city, country, or landmark comes up, call \`show\` with kind 'map' and that place so the map flies to it on screen; when a short summary, list, or set of facts would help, call \`show\` with kind 'info'. Do this proactively and in ADDITION to speaking.
 You can READ and SEARCH the user's Gmail with \`gmail_search\` (find an address, look up or check emails — returns senders/subjects/snippets + ids) and \`gmail_read\` (full body of one message by id, for summarizing). Use these to actually look things up instead of saying you can't.
@@ -125,7 +126,45 @@ const CONTROL_TOOL = {
   description: "Open things on the user's Mac. action 'open_app' launches a Mac app by name (e.g. 'Google Chrome', 'Netflix', 'Spotify', 'Notes', 'Mail'). action 'open_url' opens a web address IN CHROME — build the exact URL yourself: to play music/video use a YouTube search URL like https://www.youtube.com/results?search_query=SONG+NAME (or a direct link), open Netflix at https://www.netflix.com, or any site. Use this whenever the user says open / play / go to / put on something. You may call it more than once (e.g. open the app AND a URL).",
   input_schema: { type: 'object', properties: { action: { type: 'string', enum: ['open_url', 'open_app'] }, target: { type: 'string', description: 'A full URL (open_url) or a Mac app name (open_app).' } }, required: ['action', 'target'] },
 };
-const DIRECTOR_TOOLS = [DELEGATE_TOOL, REMEMBER_TOOL, FORGET_TOOL, SHOW_TOOL, SEND_EMAIL_TOOL, GMAIL_SEARCH_TOOL, GMAIL_READ_TOOL, SLACK_SEND_TOOL, SLACK_SEARCH_TOOL, CONTROL_TOOL];
+const SMARTLEAD_TOOL = {
+  name: 'smartlead',
+  description: "Access the user's Smartlead cold-email/outreach account (Wire's domain). action 'list_campaigns' → campaigns (id, name, status). 'campaign_analytics' → stats for a campaign (needs campaign_id): sent, opens, replies, bounces. 'list_leads' → leads in a campaign (needs campaign_id). 'add_leads' → add prospects to a campaign (needs campaign_id + leads: array of {email, first_name?, last_name?, company_name?}). Use to check outreach performance or manage leads.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      action: { type: 'string', enum: ['list_campaigns', 'campaign_analytics', 'list_leads', 'add_leads'] },
+      campaign_id: { type: 'string', description: 'Campaign id (from list_campaigns) — required except for list_campaigns.' },
+      leads: { type: 'array', items: { type: 'object' }, description: 'For add_leads: array of {email, first_name, last_name, company_name}.' },
+    },
+    required: ['action'],
+  },
+};
+const DIRECTOR_TOOLS = [DELEGATE_TOOL, REMEMBER_TOOL, FORGET_TOOL, SHOW_TOOL, SEND_EMAIL_TOOL, GMAIL_SEARCH_TOOL, GMAIL_READ_TOOL, SLACK_SEND_TOOL, SLACK_SEARCH_TOOL, CONTROL_TOOL, SMARTLEAD_TOOL];
+
+// --- Smartlead (cold-email API; key as ?api_key=) ---------------------------
+async function smartleadCall(path, method, body) {
+  const key = loadConfig().smartleadKey;
+  if (!key) throw new Error('Smartlead not connected');
+  const url = 'https://server.smartlead.ai/api/v1' + path + (path.includes('?') ? '&' : '?') + 'api_key=' + encodeURIComponent(key);
+  const opts = { method: method || 'GET', headers: {} };
+  if (body) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
+  const res = await fetch(url, opts);
+  const txt = await res.text();
+  if (!res.ok) throw new Error('Smartlead HTTP ' + res.status + ' ' + txt.slice(0, 160));
+  try { return JSON.parse(txt); } catch (_) { return txt; }
+}
+async function smartleadAction(action, campaignId, leads) {
+  if (action === 'list_campaigns') {
+    const c = await smartleadCall('/campaigns/', 'GET');
+    const arr = Array.isArray(c) ? c : (c.data || []);
+    return arr.length ? arr.slice(0, 60).map((x) => 'id=' + x.id + ' | ' + (x.name || '(unnamed)') + ' | ' + (x.status || '')).join('\n') : 'No campaigns found.';
+  }
+  if (!campaignId) throw new Error('campaign_id is required');
+  if (action === 'campaign_analytics') return JSON.stringify(await smartleadCall('/campaigns/' + campaignId + '/analytics', 'GET')).slice(0, 1600);
+  if (action === 'list_leads') return JSON.stringify(await smartleadCall('/campaigns/' + campaignId + '/leads', 'GET')).slice(0, 1600);
+  if (action === 'add_leads') { const r = await smartleadCall('/campaigns/' + campaignId + '/leads', 'POST', { lead_list: (leads || []).slice(0, 400) }); return 'Add leads result: ' + JSON.stringify(r).slice(0, 500); }
+  throw new Error('Unknown Smartlead action');
+}
 
 // --- Mac control: open apps + URLs (in Chrome) ------------------------------
 function macControl(action, target) {
@@ -438,7 +477,7 @@ function cmpVersions(a, b) {
   for (let i = 0; i < 3; i++) { const d = (pa[i] || 0) - (pb[i] || 0); if (d) return d > 0 ? 1 : -1; }
   return 0;
 }
-const CONTENT_FILES = ['index.html', 'styles.css', 'renderer.js', 'voice.js', 'game.js', 'memory.js', 'memory.css', 'jarvis.js', 'jarvis.css', 'display.js', 'display.css', 'voice-ui.js', 'voiceid.js', 'gmail-ui.js', 'slack-ui.js', 'leaflet.js', 'leaflet.css', 'manifest.json'];
+const CONTENT_FILES = ['index.html', 'styles.css', 'renderer.js', 'voice.js', 'game.js', 'memory.js', 'memory.css', 'jarvis.js', 'jarvis.css', 'display.js', 'display.css', 'voice-ui.js', 'voiceid.js', 'gmail-ui.js', 'slack-ui.js', 'smartlead-ui.js', 'leaflet.js', 'leaflet.css', 'manifest.json'];
 function syncBundledContent() {
   const src = bundledContentDir(), dst = userContentDir();
   const bundled = readManifest(src), user = readManifest(dst);
@@ -504,6 +543,19 @@ ipcMain.handle('gmail:test', async () => {
   const g = gmailConfig();
   if (!g.user || (!g.oauth && !g.pass)) return { ok: false, error: 'Not connected.' };
   try { const id = await sendGmail(g.user, 'Nexus test ✓', 'This is a test from Agent Sea — email sending works.'); return { ok: true, id }; }
+  catch (e) { return { ok: false, error: (e && e.message) || String(e) }; }
+});
+
+// --- Smartlead connect IPC --------------------------------------------------
+ipcMain.handle('smartlead:get', () => ({ connected: !!loadConfig().smartleadKey }));
+ipcMain.handle('smartlead:set', (_e, key) => {
+  const c = loadConfig(); const t = String(key || '').trim();
+  if (t) c.smartleadKey = t; else delete c.smartleadKey;
+  saveConfig(c); return { ok: true, connected: !!c.smartleadKey };
+});
+ipcMain.handle('smartlead:test', async () => {
+  if (!loadConfig().smartleadKey) return { ok: false, error: 'Not connected.' };
+  try { const c = await smartleadCall('/campaigns/', 'GET'); const arr = Array.isArray(c) ? c : (c.data || []); return { ok: true, count: arr.length }; }
   catch (e) { return { ok: false, error: (e && e.message) || String(e) }; }
 });
 
@@ -860,6 +912,19 @@ ipcMain.handle('orch:ask', async (event, text) => {
               zoom: (typeof inp.zoom === 'number' && isFinite(inp.zoom)) ? Math.max(2, Math.min(18, inp.zoom)) : null,
             });
             results[idx] = { type: 'tool_result', tool_use_id: tu.id, content: 'Displayed on the holographic HUD.' };
+          } else if (tu.name === 'smartlead') {
+            emit('agent', { agentId: 'api', state: 'working' });
+            jobs.push((async () => {
+              try {
+                const out = await smartleadAction(inp.action, inp.campaign_id, inp.leads);
+                emit('agent', { agentId: 'api', state: 'done' });
+                results[idx] = { type: 'tool_result', tool_use_id: tu.id, content: out };
+              } catch (e) {
+                const msg = (e && e.message) || String(e);
+                emit('agent', { agentId: 'api', state: 'idle' });
+                results[idx] = { type: 'tool_result', tool_use_id: tu.id, content: 'Smartlead failed: ' + msg + (/not connected/i.test(msg) ? ' — tell the user to click ⚡ to add their Smartlead API key.' : ''), is_error: true };
+              }
+            })());
           } else if (tu.name === 'control') {
             try {
               const r = macControl(inp.action, inp.target);
