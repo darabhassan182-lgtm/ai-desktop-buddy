@@ -10,8 +10,8 @@
   'use strict';
 
   /* ---------- Fixed agent roster (ids from the contract) ---------- */
-  var AGENT_IDS = ['manager', 'research', 'docs', 'marketing', 'inbox', 'api'];
-  var SPECIALISTS = ['research', 'docs', 'marketing', 'inbox', 'api'];
+  var AGENT_IDS = ['manager', 'research', 'docs', 'marketing', 'inbox', 'api', 'files'];
+  var SPECIALISTS = ['research', 'docs', 'marketing', 'inbox', 'api', 'files'];
 
   var reduceMotion = false;
   try {

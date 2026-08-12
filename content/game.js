@@ -20,7 +20,8 @@
     { id: 'docs',      name: 'QUILL', tag: 'DOCS',     accent: '#34d399' },
     { id: 'marketing', name: 'SPARK', tag: 'CREATIVE', accent: '#f5a623' },
     { id: 'inbox',     name: 'ECHO',  tag: 'COMMS',    accent: '#ec4899' },
-    { id: 'api',       name: 'WIRE',  tag: 'AUTOMATE', accent: '#22d3ee' }
+    { id: 'api',       name: 'WIRE',  tag: 'AUTOMATE', accent: '#22d3ee' },
+    { id: 'files',     name: 'SIFT',  tag: 'FILES',    accent: '#a78bfa' }
   ];
 
   var canvas, ctx, dpr = 1, W = 0, H = 0, running = false, t = 0, lastT = 0;

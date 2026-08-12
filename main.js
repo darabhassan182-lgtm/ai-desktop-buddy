@@ -41,14 +41,18 @@ const SUBAGENTS = {
   api:       { name: 'Wire',
     system: "You are Wire, an API/automation specialist AND the user's Make.com expert. For automation/API tasks give concrete steps, code, or payloads. For Make.com: BUILD scenarios (emit a valid blueprint object and call make.create_scenario), STUDY them (make.get_blueprint then explain in plain English), and list/run/activate scenarios with the `make` tool. Always name a created scenario clearly and confirm what it will do.\n\n" + MAKE_KNOWLEDGE,
     tools: [MAKE_TOOL] },
+  files:     { name: 'Sift',
+    system: "You are Sift, the file specialist — you find and UNDERSTAND files of ANY type, fast. Use find_files to locate and read_file to open/parse anything: text, code, JSON, CSV, PDFs, Word/Excel/PowerPoint, images (you receive them to view), or unknown/binary formats (read_file identifies the type, extracts readable text, and opens the file in its app). If a format is unfamiliar, read_file still returns its type + extracted text — reason about the structure from there and explain it. Answer the user's question about the file plainly and precisely, and name the file.",
+    tools: [] },
 };
 
-const DIRECTOR_SYSTEM = `You are Agent Sea, the Director of an AI studio. You have five specialists you delegate to with the \`delegate\` tool:
+const DIRECTOR_SYSTEM = `You are Agent Sea, the Director of an AI studio. You have six specialists you delegate to with the \`delegate\` tool:
 - research (Scout): web search, facts, current info
 - docs (Quill): writing and editing documents
 - marketing (Spark): marketing copy and ideas
 - inbox (Echo): drafting Slack messages and email replies
 - api (Wire): API calls, automation, and Make.com — building, studying, running, and managing scenarios (delegate any Make.com / "build me an automation" / "what does this scenario do" request to Wire)
+- files (Sift): finding and UNDERSTANDING any file on the Mac — text, code, JSON, CSV, PDF, Word/Excel/PowerPoint, images, or unknown/binary formats (delegate any "find/open/read/what's in this file" request to Sift; for simple lookups you can also use find_files/read_file directly)
 You also have a long-term MEMORY. Use the \`remember\` tool whenever the user shares durable information (their name, company, preferences, a repeatable process/workflow) so you can act faster next time; use \`forget\` to remove an outdated item by id. Never re-ask for something already in MEMORY, and never ask for a stored credential's value.
 LEARN AND ADAPT to the user over time: notice their habits, routines, favourite apps/sites/music, the people they contact, and how they like things done — and proactively \`remember\` them (e.g. "morning routine = open Chrome + Gmail", "favourite focus music = lo-fi beats on YouTube", "usually emails Areeba about design"). When you spot a repeated pattern, save it and use it so a short command triggers the whole thing next time. Prefer acting on remembered shortcuts over re-asking.
 You can SEARCH the user's Mac for files with \`find_files\` (by name or content, via Spotlight) and then open a result with \`control\` action 'open_path'. Use it whenever they ask to find/locate/open a file or document.
@@ -177,7 +181,13 @@ const FIND_FILES_TOOL = {
     required: ['query'],
   },
 };
-const DIRECTOR_TOOLS = [DELEGATE_TOOL, REMEMBER_TOOL, FORGET_TOOL, SHOW_TOOL, SEND_EMAIL_TOOL, GMAIL_SEARCH_TOOL, GMAIL_READ_TOOL, SLACK_SEND_TOOL, SLACK_SEARCH_TOOL, CONTROL_TOOL, SMARTLEAD_TOOL, TAKE_CONTROL_TOOL, FIND_FILES_TOOL];
+const READ_FILE_TOOL = {
+  name: 'read_file',
+  description: "Read and UNDERSTAND a file on the Mac by its path — ANY type: text/code/JSON/CSV, PDF, Word/Excel/PowerPoint, images (returned so you can see them), or unknown/binary (it gets identified, readable text extracted, and the file opened in its app). Use after find_files, or whenever the user references a file or path.",
+  input_schema: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
+};
+const DIRECTOR_TOOLS = [DELEGATE_TOOL, REMEMBER_TOOL, FORGET_TOOL, SHOW_TOOL, SEND_EMAIL_TOOL, GMAIL_SEARCH_TOOL, GMAIL_READ_TOOL, SLACK_SEND_TOOL, SLACK_SEARCH_TOOL, CONTROL_TOOL, SMARTLEAD_TOOL, TAKE_CONTROL_TOOL, FIND_FILES_TOOL, READ_FILE_TOOL];
+SUBAGENTS.files.tools = [FIND_FILES_TOOL, READ_FILE_TOOL];   // Sift gets file find + read (defined above via hoisting-safe assignment)
 
 // --- File search (Spotlight / mdfind) ---------------------------------------
 function findFiles(query, nameOnly, kind, limit) {
@@ -198,6 +208,36 @@ function findFiles(query, nameOnly, kind, limit) {
     });
   });
 }
+function runOut(cmd, args) { return new Promise((res) => execFile(cmd, args, { maxBuffer: 12 * 1024 * 1024, timeout: 20000 }, (e, out) => res(String(out || '')))); }
+const PDFTOTEXT = ['/opt/homebrew/bin/pdftotext', '/usr/local/bin/pdftotext'].find((x) => { try { return fs.existsSync(x); } catch (_) { return false; } });
+// Understand any file — pick the best extraction per type; learn/adapt for unknowns.
+async function readFileSmart(p) {
+  p = String(p || '').trim().replace(/^~(?=\/)/, os.homedir());
+  let st; try { st = fs.statSync(p); } catch (_) { return { kind: 'text', text: 'File not found: ' + p }; }
+  if (st.isDirectory()) { let items = []; try { items = fs.readdirSync(p).slice(0, 300); } catch (_) {} return { kind: 'text', text: 'Folder ' + p + ' (' + items.length + ' items):\n' + items.join('\n') }; }
+  const ext = (p.split('.').pop() || '').toLowerCase();
+  const cap = (t) => (t.length > 60000 ? t.slice(0, 60000) + '\n…[truncated]' : t);
+  const IMG = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp' };
+  if (IMG[ext]) { try { return { kind: 'image', b64: fs.readFileSync(p).toString('base64'), media_type: IMG[ext] }; } catch (_) {} }
+  if (['heic', 'heif', 'tiff', 'tif'].includes(ext)) { const tmp = path.join(os.tmpdir(), 'nx-i-' + Date.now() + '.png'); await sh('sips', ['-s', 'format', 'png', p, '--out', tmp]); try { const b = fs.readFileSync(tmp).toString('base64'); fs.unlinkSync(tmp); return { kind: 'image', b64: b, media_type: 'image/png' }; } catch (_) {} }
+  const TEXT = ['txt', 'text', 'md', 'markdown', 'json', 'jsonl', 'csv', 'tsv', 'js', 'mjs', 'cjs', 'ts', 'tsx', 'jsx', 'py', 'rb', 'go', 'rs', 'java', 'c', 'cc', 'cpp', 'h', 'hpp', 'html', 'htm', 'xml', 'yaml', 'yml', 'toml', 'ini', 'cfg', 'conf', 'log', 'sh', 'zsh', 'bash', 'css', 'scss', 'less', 'sql', 'env', 'blueprint', 'geojson', 'svg', 'php', 'pl', 'lua', 'r', 'swift', 'kt', 'gradle', 'properties', 'plist', 'srt', 'vtt'];
+  if (TEXT.includes(ext)) { try { return { kind: 'text', text: cap(fs.readFileSync(p, 'utf8')) }; } catch (_) {} }
+  if (ext === 'pdf') {
+    if (PDFTOTEXT) { const out = await runOut(PDFTOTEXT, ['-nopgbrk', p, '-']); if (out.trim()) return { kind: 'text', text: cap(out) }; }
+    const tmp = path.join(os.tmpdir(), 'nx-pdf-' + Date.now() + '.png'); await sh('sips', ['-s', 'format', 'png', p, '--out', tmp]);
+    try { const b = fs.readFileSync(tmp).toString('base64'); fs.unlinkSync(tmp); return { kind: 'image', b64: b, media_type: 'image/png' }; } catch (_) {}
+    return { kind: 'text', text: 'PDF at ' + p + ' — could not extract text.' };
+  }
+  if (['docx', 'doc', 'rtf', 'odt', 'rtfd', 'wpd'].includes(ext)) { const out = await runOut('textutil', ['-convert', 'txt', '-stdout', p]); if (out.trim()) return { kind: 'text', text: cap(out) }; }
+  if (['xlsx', 'pptx', 'docx', 'ods', 'odp', 'epub', 'key', 'numbers', 'pages'].includes(ext)) { const out = await runOut('unzip', ['-p', p, '*.xml']); const s = out.replace(/<[^>]+>/g, ' ').replace(/&[a-z]+;/g, ' ').replace(/\s+/g, ' ').trim(); if (s) return { kind: 'text', text: cap(s) }; }
+  // Unknown / binary — identify it, pull readable strings, and open it so the user sees it.
+  const ftype = (await runOut('file', ['-b', p])).trim() || 'unknown type';
+  if (/\btext\b|ASCII|UTF-8|JSON|XML|source/i.test(ftype)) { try { return { kind: 'text', text: cap(fs.readFileSync(p, 'utf8')) }; } catch (_) {} }
+  const strs = (await runOut('strings', [p])).trim();
+  execFile('open', [p], () => {});
+  return { kind: 'text', text: "I couldn't fully parse this as text (it's " + ftype + '), so I opened it in its default app. Readable text extracted:\n' + (strs ? strs.slice(0, 20000) : '(none)') };
+}
+function toolResultContent(r) { return r.kind === 'image' ? [{ type: 'image', source: { type: 'base64', media_type: r.media_type, data: r.b64 } }] : (r.text || '(empty)'); }
 
 // --- Smartlead (cold-email API; key as ?api_key=) ---------------------------
 async function smartleadCall(path, method, body) {
@@ -1074,7 +1114,10 @@ async function runSubAgent(id, task, emit) {
       const results = [];
       for (const tu of toolUses) {
         try {
-          if (tu.name === 'make') { const out = await makeAction(tu.input || {}); results.push({ type: 'tool_result', tool_use_id: tu.id, content: out }); }
+          const ip = tu.input || {};
+          if (tu.name === 'make') { results.push({ type: 'tool_result', tool_use_id: tu.id, content: await makeAction(ip) }); }
+          else if (tu.name === 'find_files') { results.push({ type: 'tool_result', tool_use_id: tu.id, content: await findFiles(ip.query, ip.name_only, ip.kind, ip.limit) }); }
+          else if (tu.name === 'read_file') { results.push({ type: 'tool_result', tool_use_id: tu.id, content: toolResultContent(await readFileSmart(ip.path)) }); }
           else results.push({ type: 'tool_result', tool_use_id: tu.id, content: 'Unknown tool.', is_error: true });
         } catch (e) {
           const msgTxt = (e && e.message) || String(e);
@@ -1187,6 +1230,15 @@ ipcMain.handle('orch:ask', async (event, text) => {
                 emit('agent', { agentId: 'api', state: 'done' });
                 results[idx] = { type: 'tool_result', tool_use_id: tu.id, content: out };
               } catch (e) { emit('agent', { agentId: 'api', state: 'idle' }); results[idx] = { type: 'tool_result', tool_use_id: tu.id, content: 'File search failed: ' + ((e && e.message) || e), is_error: true }; }
+            })());
+          } else if (tu.name === 'read_file') {
+            emit('agent', { agentId: 'files', state: 'working' });
+            jobs.push((async () => {
+              try {
+                const r = await readFileSmart(inp.path);
+                emit('agent', { agentId: 'files', state: 'done' });
+                results[idx] = { type: 'tool_result', tool_use_id: tu.id, content: toolResultContent(r) };
+              } catch (e) { emit('agent', { agentId: 'files', state: 'idle' }); results[idx] = { type: 'tool_result', tool_use_id: tu.id, content: 'Read failed: ' + ((e && e.message) || e), is_error: true }; }
             })());
           } else if (tu.name === 'control') {
             try {
