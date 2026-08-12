@@ -128,12 +128,13 @@ const CONTROL_TOOL = {
 };
 const SMARTLEAD_TOOL = {
   name: 'smartlead',
-  description: "Access the user's Smartlead cold-email/outreach account (Wire's domain). action 'list_campaigns' → campaigns (id, name, status). 'campaign_analytics' → stats for a campaign (needs campaign_id): sent, opens, replies, bounces. 'list_leads' → leads in a campaign (needs campaign_id). 'add_leads' → add prospects to a campaign (needs campaign_id + leads: array of {email, first_name?, last_name?, company_name?}). Use to check outreach performance or manage leads.",
+  description: "Access the user's Smartlead cold-email/outreach account (Wire's domain). action 'list_campaigns' → campaigns (id, name, status) — the account can have HUNDREDS, so pass `query` to filter by name (e.g. query:'Vet'). 'campaign_analytics' → stats for a campaign (needs campaign_id): sent, opens, replies, bounces. 'list_leads' → leads in a campaign (needs campaign_id). 'add_leads' → add prospects (needs campaign_id + leads: array of {email, first_name?, last_name?, company_name?}). To act on a named campaign: list_campaigns with query to get its id, then use that id.",
   input_schema: {
     type: 'object',
     properties: {
       action: { type: 'string', enum: ['list_campaigns', 'campaign_analytics', 'list_leads', 'add_leads'] },
       campaign_id: { type: 'string', description: 'Campaign id (from list_campaigns) — required except for list_campaigns.' },
+      query: { type: 'string', description: "For list_campaigns: only return campaigns whose name contains this (case-insensitive)." },
       leads: { type: 'array', items: { type: 'object' }, description: 'For add_leads: array of {email, first_name, last_name, company_name}.' },
     },
     required: ['action'],
@@ -153,11 +154,13 @@ async function smartleadCall(path, method, body) {
   if (!res.ok) throw new Error('Smartlead HTTP ' + res.status + ' ' + txt.slice(0, 160));
   try { return JSON.parse(txt); } catch (_) { return txt; }
 }
-async function smartleadAction(action, campaignId, leads) {
+async function smartleadAction(action, campaignId, leads, query) {
   if (action === 'list_campaigns') {
     const c = await smartleadCall('/campaigns/', 'GET');
-    const arr = Array.isArray(c) ? c : (c.data || []);
-    return arr.length ? arr.slice(0, 60).map((x) => 'id=' + x.id + ' | ' + (x.name || '(unnamed)') + ' | ' + (x.status || '')).join('\n') : 'No campaigns found.';
+    let arr = Array.isArray(c) ? c : (c.data || []);
+    if (query) { const q = String(query).toLowerCase(); arr = arr.filter((x) => String(x.name || '').toLowerCase().indexOf(q) !== -1); }
+    if (!arr.length) return query ? ('No campaigns matching "' + query + '".') : 'No campaigns found.';
+    return 'Total ' + arr.length + (query ? ' matching "' + query + '"' : '') + ':\n' + arr.slice(0, 60).map((x) => 'id=' + x.id + ' | ' + (x.name || '(unnamed)') + ' | ' + (x.status || '')).join('\n');
   }
   if (!campaignId) throw new Error('campaign_id is required');
   if (action === 'campaign_analytics') return JSON.stringify(await smartleadCall('/campaigns/' + campaignId + '/analytics', 'GET')).slice(0, 1600);
@@ -916,7 +919,7 @@ ipcMain.handle('orch:ask', async (event, text) => {
             emit('agent', { agentId: 'api', state: 'working' });
             jobs.push((async () => {
               try {
-                const out = await smartleadAction(inp.action, inp.campaign_id, inp.leads);
+                const out = await smartleadAction(inp.action, inp.campaign_id, inp.leads, inp.query);
                 emit('agent', { agentId: 'api', state: 'done' });
                 results[idx] = { type: 'tool_result', tool_use_id: tu.id, content: out };
               } catch (e) {
