@@ -8,9 +8,24 @@ const { execFile } = require('child_process');
 require('dotenv').config({ path: path.join(__dirname, '.env') });
 const Anthropic = require('@anthropic-ai/sdk');
 const nodemailer = require('nodemailer');
+const MAKE_KNOWLEDGE = require('./make-knowledge');
 
 let mainWindow;
 let client = null;
+
+const MAKE_TOOL = {
+  name: 'make',
+  description: "Operate the user's Make.com account. actions: 'list_scenarios' (optional `query` filters by name), 'get_blueprint' (needs scenario_id — returns the scenario's blueprint JSON to STUDY), 'create_scenario' (needs `name` + `blueprint` = the scenario blueprint object with flow/metadata), 'run_scenario'/'activate'/'deactivate' (need scenario_id), 'list_connections', 'list_data_stores'.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      action: { type: 'string', enum: ['list_scenarios', 'get_blueprint', 'create_scenario', 'run_scenario', 'activate', 'deactivate', 'list_connections', 'list_data_stores'] },
+      scenario_id: { type: 'string' }, name: { type: 'string' }, query: { type: 'string' },
+      blueprint: { type: 'object', description: 'For create_scenario: the scenario blueprint object (name, flow[], metadata).' },
+    },
+    required: ['action'],
+  },
+};
 
 // --- The team: one Director (Nova) + five specialists -----------------------
 const SUBAGENTS = {
@@ -24,7 +39,8 @@ const SUBAGENTS = {
   inbox:     { name: 'Echo',
     system: 'You are Echo, a communications specialist. Draft the requested Slack message or email reply in an appropriate tone. Return the draft.', tools: [] },
   api:       { name: 'Wire',
-    system: 'You are Wire, an API/automation specialist. Produce the concrete steps, code, or request/response payloads for the automation or API task.', tools: [] },
+    system: "You are Wire, an API/automation specialist AND the user's Make.com expert. For automation/API tasks give concrete steps, code, or payloads. For Make.com: BUILD scenarios (emit a valid blueprint object and call make.create_scenario), STUDY them (make.get_blueprint then explain in plain English), and list/run/activate scenarios with the `make` tool. Always name a created scenario clearly and confirm what it will do.\n\n" + MAKE_KNOWLEDGE,
+    tools: [MAKE_TOOL] },
 };
 
 const DIRECTOR_SYSTEM = `You are Agent Sea, the Director of an AI studio. You have five specialists you delegate to with the \`delegate\` tool:
@@ -32,7 +48,7 @@ const DIRECTOR_SYSTEM = `You are Agent Sea, the Director of an AI studio. You ha
 - docs (Quill): writing and editing documents
 - marketing (Spark): marketing copy and ideas
 - inbox (Echo): drafting Slack messages and email replies
-- api (Wire): API calls and automation tasks
+- api (Wire): API calls, automation, and Make.com — building, studying, running, and managing scenarios (delegate any Make.com / "build me an automation" / "what does this scenario do" request to Wire)
 You also have a long-term MEMORY. Use the \`remember\` tool whenever the user shares durable information (their name, company, preferences, a repeatable process/workflow) so you can act faster next time; use \`forget\` to remove an outdated item by id. Never re-ask for something already in MEMORY, and never ask for a stored credential's value.
 LEARN AND ADAPT to the user over time: notice their habits, routines, favourite apps/sites/music, the people they contact, and how they like things done — and proactively \`remember\` them (e.g. "morning routine = open Chrome + Gmail", "favourite focus music = lo-fi beats on YouTube", "usually emails Areeba about design"). When you spot a repeated pattern, save it and use it so a short command triggers the whole thing next time. Prefer acting on remembered shortcuts over re-asking.
 Wire can access the user's SMARTLEAD cold-email account with the \`smartlead\` tool — list campaigns, pull a campaign's analytics (opens/replies/etc.), read leads, or add leads. If it isn't connected, tell them to click the ⚡ button to add their Smartlead API key.
@@ -173,6 +189,50 @@ async function smartleadAction(action, campaignId, leads, query) {
   if (action === 'list_leads') return JSON.stringify(await smartleadCall('/campaigns/' + campaignId + '/leads', 'GET')).slice(0, 1600);
   if (action === 'add_leads') { const r = await smartleadCall('/campaigns/' + campaignId + '/leads', 'POST', { lead_list: (leads || []).slice(0, 400) }); return 'Add leads result: ' + JSON.stringify(r).slice(0, 500); }
   throw new Error('Unknown Smartlead action');
+}
+
+// --- Make.com (Wire's automation platform) ----------------------------------
+function makeConfig() { const c = loadConfig(); return { token: c.makeToken || '', zone: c.makeZone || 'eu1' }; }
+async function makeCall(method, mpath, body) {
+  const { token, zone } = makeConfig();
+  if (!token) throw new Error('Make not connected');
+  const opts = { method, headers: { Authorization: 'Token ' + token } };
+  if (body) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
+  const res = await fetch('https://' + zone + '.make.com/api/v2' + mpath, opts);
+  const txt = await res.text();
+  if (!res.ok) throw new Error('Make HTTP ' + res.status + ' ' + txt.slice(0, 180));
+  try { return JSON.parse(txt); } catch (_) { return txt; }
+}
+async function makeTeam() {
+  const c = loadConfig(); if (c.makeTeamId) return c.makeTeamId;
+  const orgs = await makeCall('GET', '/organizations'); const org = (orgs.organizations || [])[0];
+  if (!org) throw new Error('No Make organization on this account');
+  const teams = await makeCall('GET', '/teams?organizationId=' + org.id); const team = (teams.teams || [])[0];
+  if (!team) throw new Error('No Make team found');
+  c.makeTeamId = team.id; saveConfig(c); return team.id;
+}
+async function makeAction(inp) {
+  const a = inp.action;
+  if (a === 'list_scenarios') {
+    const team = await makeTeam();
+    const sc = await makeCall('GET', '/scenarios?teamId=' + team + '&pg[limit]=100');
+    let arr = sc.scenarios || [];
+    if (inp.query) { const q = String(inp.query).toLowerCase(); arr = arr.filter((s) => String(s.name || '').toLowerCase().indexOf(q) !== -1); }
+    return arr.length ? ('Total ' + arr.length + ':\n' + arr.slice(0, 60).map((s) => 'id=' + s.id + ' | ' + (s.name || '') + ' | ' + (s.isActive ? 'ON' : 'off')).join('\n')) : 'No scenarios found.';
+  }
+  if (a === 'get_blueprint') { const bp = await makeCall('GET', '/scenarios/' + inp.scenario_id + '/blueprint'); return JSON.stringify((bp.response && bp.response.blueprint) || bp).slice(0, 8000); }
+  if (a === 'create_scenario') {
+    const team = await makeTeam();
+    const bp = inp.blueprint || {}; if (inp.name && !bp.name) bp.name = inp.name;
+    const r = await makeCall('POST', '/scenarios', { blueprint: JSON.stringify(bp), teamId: team, scheduling: JSON.stringify({ type: 'indefinitely', interval: 900 }) });
+    return 'Created scenario id=' + ((r.scenario && r.scenario.id) || JSON.stringify(r).slice(0, 200)) + ' (created OFF — activate when ready).';
+  }
+  if (a === 'run_scenario') { const r = await makeCall('POST', '/scenarios/' + inp.scenario_id + '/run', { responsive: false }); return 'Run started: ' + JSON.stringify(r).slice(0, 160); }
+  if (a === 'activate') { await makeCall('POST', '/scenarios/' + inp.scenario_id + '/start', {}); return 'Scenario activated.'; }
+  if (a === 'deactivate') { await makeCall('POST', '/scenarios/' + inp.scenario_id + '/stop', {}); return 'Scenario deactivated.'; }
+  if (a === 'list_connections') { const team = await makeTeam(); const r = await makeCall('GET', '/connections?teamId=' + team); return JSON.stringify(r.connections || r).slice(0, 2500); }
+  if (a === 'list_data_stores') { const team = await makeTeam(); const r = await makeCall('GET', '/data-stores?teamId=' + team); return JSON.stringify(r.dataStores || r['data-stores'] || r).slice(0, 2500); }
+  return 'Unknown make action.';
 }
 
 // --- Full computer control: Sea sees the screen + moves/clicks the mouse ----
@@ -591,7 +651,7 @@ function cmpVersions(a, b) {
   for (let i = 0; i < 3; i++) { const d = (pa[i] || 0) - (pb[i] || 0); if (d) return d > 0 ? 1 : -1; }
   return 0;
 }
-const CONTENT_FILES = ['index.html', 'styles.css', 'renderer.js', 'voice.js', 'game.js', 'memory.js', 'memory.css', 'jarvis.js', 'jarvis.css', 'display.js', 'display.css', 'voice-ui.js', 'voiceid.js', 'gmail-ui.js', 'slack-ui.js', 'smartlead-ui.js', 'leaflet.js', 'leaflet.css', 'manifest.json'];
+const CONTENT_FILES = ['index.html', 'styles.css', 'renderer.js', 'voice.js', 'game.js', 'memory.js', 'memory.css', 'jarvis.js', 'jarvis.css', 'display.js', 'display.css', 'voice-ui.js', 'voiceid.js', 'gmail-ui.js', 'slack-ui.js', 'smartlead-ui.js', 'make-ui.js', 'leaflet.js', 'leaflet.css', 'manifest.json'];
 function syncBundledContent() {
   const src = bundledContentDir(), dst = userContentDir();
   const bundled = readManifest(src), user = readManifest(dst);
@@ -657,6 +717,21 @@ ipcMain.handle('gmail:test', async () => {
   const g = gmailConfig();
   if (!g.user || (!g.oauth && !g.pass)) return { ok: false, error: 'Not connected.' };
   try { const id = await sendGmail(g.user, 'Nexus test ✓', 'This is a test from Agent Sea — email sending works.'); return { ok: true, id }; }
+  catch (e) { return { ok: false, error: (e && e.message) || String(e) }; }
+});
+
+// --- Make.com connect IPC ---------------------------------------------------
+ipcMain.handle('make:get', () => { const c = loadConfig(); return { connected: !!c.makeToken, zone: c.makeZone || 'eu1' }; });
+ipcMain.handle('make:set', (_e, token, zone) => {
+  const c = loadConfig(); const t = String(token || '').trim();
+  if (t) c.makeToken = t; else delete c.makeToken;
+  if (zone) c.makeZone = String(zone).trim();
+  delete c.makeTeamId;   // re-resolve team on next use (token/zone changed)
+  saveConfig(c); return { ok: true, connected: !!c.makeToken };
+});
+ipcMain.handle('make:test', async () => {
+  if (!loadConfig().makeToken) return { ok: false, error: 'Not connected.' };
+  try { const team = await makeTeam(); const sc = await makeCall('GET', '/scenarios?teamId=' + team + '&pg[limit]=1'); return { ok: true, team, total: (sc.pg && sc.pg.total) != null ? sc.pg.total : (sc.scenarios ? sc.scenarios.length : 0) }; }
   catch (e) { return { ok: false, error: (e && e.message) || String(e) }; }
 });
 
@@ -950,13 +1025,29 @@ async function runSubAgent(id, task, emit) {
   emit('agent', { agentId: id, state: a.searching ? 'searching' : 'working' });
   const messages = [{ role: 'user', content: String(task || '') }];
   let text = '';
-  for (let i = 0; i < 6; i++) {
+  for (let i = 0; i < 8; i++) {
     const stream = client.messages.stream({
       model: 'claude-sonnet-5', max_tokens: 2048, system: a.system,
       tools: (a.tools && a.tools.length) ? a.tools : undefined, messages,
     });
     const msg = await stream.finalMessage();
-    if (msg.stop_reason === 'pause_turn') { messages.push({ role: 'assistant', content: msg.content }); continue; }
+    if (msg.stop_reason === 'pause_turn') { messages.push({ role: 'assistant', content: msg.content }); continue; }  // server tool (web_search) → resume
+    const toolUses = msg.content.filter((b) => b.type === 'tool_use');
+    if (msg.stop_reason === 'tool_use' && toolUses.length) {   // client tools (e.g. Wire's `make`) → execute
+      messages.push({ role: 'assistant', content: msg.content });
+      const results = [];
+      for (const tu of toolUses) {
+        try {
+          if (tu.name === 'make') { const out = await makeAction(tu.input || {}); results.push({ type: 'tool_result', tool_use_id: tu.id, content: out }); }
+          else results.push({ type: 'tool_result', tool_use_id: tu.id, content: 'Unknown tool.', is_error: true });
+        } catch (e) {
+          const msgTxt = (e && e.message) || String(e);
+          results.push({ type: 'tool_result', tool_use_id: tu.id, content: 'Failed: ' + msgTxt + (/not connected/i.test(msgTxt) ? ' — tell the user to connect Make with the 🔗 button.' : ''), is_error: true });
+        }
+      }
+      messages.push({ role: 'user', content: results });
+      continue;
+    }
     text = msg.content.filter((b) => b.type === 'text').map((b) => b.text).join(' ').trim();
     break;
   }

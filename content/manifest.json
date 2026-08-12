@@ -1,5 +1,5 @@
 {
-  "version": "0.47.0",
+  "version": "0.48.0",
   "files": [
     "index.html",
     "styles.css",
@@ -17,6 +17,7 @@
     "gmail-ui.js",
     "slack-ui.js",
     "smartlead-ui.js",
+    "make-ui.js",
     "leaflet.js",
     "leaflet.css"
   ]

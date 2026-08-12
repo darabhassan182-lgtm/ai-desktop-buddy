@@ -1,6 +1,6 @@
 {
   "name": "ai-desktop-buddy",
-  "version": "0.47.0",
+  "version": "0.48.0",
   "description": "A desktop AI character (Scout) you can talk to that researches the web and answers out loud.",
   "main": "main.js",
   "scripts": {
@@ -14,6 +14,7 @@
     "files": [
       "main.js",
       "preload.js",
+      "make-knowledge.js",
       "content/**/*",
       "package.json"
     ],

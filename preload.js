@@ -42,6 +42,12 @@ contextBridge.exposeInMainWorld('nexus', {
     set: (key) => ipcRenderer.invoke('smartlead:set', key),
     test: () => ipcRenderer.invoke('smartlead:test'),
   },
+  // Make.com (token stored locally; never returned)
+  make: {
+    get: () => ipcRenderer.invoke('make:get'),
+    set: (token, zone) => ipcRenderer.invoke('make:set', token, zone),
+    test: () => ipcRenderer.invoke('make:test'),
+  },
   // Voice (ElevenLabs cinematic TTS): key never returned to the renderer
   voice: {
     get: () => ipcRenderer.invoke('voice:get'),
