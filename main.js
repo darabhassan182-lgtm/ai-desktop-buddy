@@ -51,6 +51,7 @@ const DIRECTOR_SYSTEM = `You are Agent Sea, the Director of an AI studio. You ha
 - api (Wire): API calls, automation, and Make.com — building, studying, running, and managing scenarios (delegate any Make.com / "build me an automation" / "what does this scenario do" request to Wire)
 You also have a long-term MEMORY. Use the \`remember\` tool whenever the user shares durable information (their name, company, preferences, a repeatable process/workflow) so you can act faster next time; use \`forget\` to remove an outdated item by id. Never re-ask for something already in MEMORY, and never ask for a stored credential's value.
 LEARN AND ADAPT to the user over time: notice their habits, routines, favourite apps/sites/music, the people they contact, and how they like things done — and proactively \`remember\` them (e.g. "morning routine = open Chrome + Gmail", "favourite focus music = lo-fi beats on YouTube", "usually emails Areeba about design"). When you spot a repeated pattern, save it and use it so a short command triggers the whole thing next time. Prefer acting on remembered shortcuts over re-asking.
+You can SEARCH the user's Mac for files with \`find_files\` (by name or content, via Spotlight) and then open a result with \`control\` action 'open_path'. Use it whenever they ask to find/locate/open a file or document.
 Wire can access the user's SMARTLEAD cold-email account with the \`smartlead\` tool — list campaigns, pull a campaign's analytics (opens/replies/etc.), read leads, or add leads. If it isn't connected, tell them to click the ⚡ button to add their Smartlead API key.
 You can OPEN things on the user's Mac with the \`control\` tool — launch apps (Chrome, Netflix, Spotify…) and open URLs in Chrome (websites, a YouTube search to play a song/video, etc.). When the user says open/play/put on/go to something, just do it with \`control\`; you don't need permission to open apps or websites.
 You can also TAKE FULL CONTROL of the mouse and keyboard with \`take_control\` — but ONLY when the user has clearly asked you to operate the screen / navigate / click through something, AND you can't do it with a known URL or another tool. Do NOT take control for casual chat or things a direct answer or \`control\` (open URL) can do. If you already have a remembered "Working URL" for this, just open it with \`control\` instead. When you do take control, it runs one careful step at a time and the user can say "stop" to halt it instantly. Only pause to confirm before irreversible/sensitive actions (sending money, deleting, posting publicly, sending a message/email).
@@ -140,8 +141,8 @@ const SLACK_SEARCH_TOOL = {
 };
 const CONTROL_TOOL = {
   name: 'control',
-  description: "Open things on the user's Mac. action 'open_app' launches a Mac app by name (e.g. 'Google Chrome', 'Netflix', 'Spotify', 'Notes', 'Mail'). action 'open_url' opens a web address IN CHROME — build the exact URL yourself: to play music/video use a YouTube search URL like https://www.youtube.com/results?search_query=SONG+NAME (or a direct link), open Netflix at https://www.netflix.com, or any site. Use this whenever the user says open / play / go to / put on something. You may call it more than once (e.g. open the app AND a URL).",
-  input_schema: { type: 'object', properties: { action: { type: 'string', enum: ['open_url', 'open_app'] }, target: { type: 'string', description: 'A full URL (open_url) or a Mac app name (open_app).' } }, required: ['action', 'target'] },
+  description: "Open things on the user's Mac. action 'open_app' launches a Mac app by name (e.g. 'Google Chrome', 'Netflix', 'Spotify', 'Notes', 'Mail'). action 'open_url' opens a web address IN CHROME — build the exact URL yourself: to play music/video use a YouTube search URL like https://www.youtube.com/results?search_query=SONG+NAME (or a direct link), open Netflix at https://www.netflix.com, or any site. action 'open_path' opens a FILE or FOLDER by its path (e.g. a result from find_files) in its default app/Finder. Use this whenever the user says open / play / go to / put on / open the file. You may call it more than once.",
+  input_schema: { type: 'object', properties: { action: { type: 'string', enum: ['open_url', 'open_app', 'open_path'] }, target: { type: 'string', description: 'A full URL (open_url), a Mac app name (open_app), or a file/folder path (open_path).' } }, required: ['action', 'target'] },
 };
 const SMARTLEAD_TOOL = {
   name: 'smartlead',
@@ -162,7 +163,41 @@ const TAKE_CONTROL_TOOL = {
   description: "Take over the mouse and keyboard to actually DO a task on the user's screen — navigate a website, click through an app, fill a form, or fix a wrong page by clicking to the right place. Use this whenever a task needs operating the computer visually (not just opening a URL). Prefer this over `control` when the exact URL is unknown or you need to click around. `goal` = a clear, complete description of what to accomplish.",
   input_schema: { type: 'object', properties: { goal: { type: 'string' } }, required: ['goal'] },
 };
-const DIRECTOR_TOOLS = [DELEGATE_TOOL, REMEMBER_TOOL, FORGET_TOOL, SHOW_TOOL, SEND_EMAIL_TOOL, GMAIL_SEARCH_TOOL, GMAIL_READ_TOOL, SLACK_SEND_TOOL, SLACK_SEARCH_TOOL, CONTROL_TOOL, SMARTLEAD_TOOL, TAKE_CONTROL_TOOL];
+const FIND_FILES_TOOL = {
+  name: 'find_files',
+  description: "Search the user's Mac (Spotlight) for files by name or content. Returns matching file paths. Use whenever the user wants to find, locate, or open a file/document. To OPEN a result, use the `control` tool with action 'open_path' and the file path.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      query: { type: 'string', description: 'Filename, keywords, or phrase to find.' },
+      name_only: { type: 'boolean', description: 'true = match filenames only; false (default) = also match file contents.' },
+      kind: { type: 'string', description: "Optional file kind filter, e.g. 'pdf', 'image', 'folder', 'presentation', 'spreadsheet'." },
+      limit: { type: 'number', description: 'Max results (default 15).' },
+    },
+    required: ['query'],
+  },
+};
+const DIRECTOR_TOOLS = [DELEGATE_TOOL, REMEMBER_TOOL, FORGET_TOOL, SHOW_TOOL, SEND_EMAIL_TOOL, GMAIL_SEARCH_TOOL, GMAIL_READ_TOOL, SLACK_SEND_TOOL, SLACK_SEARCH_TOOL, CONTROL_TOOL, SMARTLEAD_TOOL, TAKE_CONTROL_TOOL, FIND_FILES_TOOL];
+
+// --- File search (Spotlight / mdfind) ---------------------------------------
+function findFiles(query, nameOnly, kind, limit) {
+  return new Promise((resolve) => {
+    const q = String(query || '').trim();
+    if (!q) { resolve('No query.'); return; }
+    const args = ['-onlyin', os.homedir()];
+    if (nameOnly) { args.push('-name', q); }
+    else if (kind) { args.push('kMDItemDisplayName == "*' + q + '*"cd || (kMDItemTextContent == "*' + q + '*"cd && kMDItemKind == "*' + kind + '*"cd)'); }
+    else { args.push(q); }
+    execFile('mdfind', args, { maxBuffer: 4 * 1024 * 1024, timeout: 12000 }, (e, out) => {
+      let lines = String(out || '').split('\n').filter(Boolean);
+      if (kind && !nameOnly) lines = lines.filter((p) => new RegExp(kind, 'i').test(p) || true); // kind mostly handled in query
+      const n = Math.max(1, Math.min(40, limit || 15));
+      lines = lines.slice(0, n);
+      if (!lines.length) { resolve('No files found for "' + q + '".'); return; }
+      resolve(lines.map((p) => { const name = p.split('/').pop(); return name + '  —  ' + p; }).join('\n'));
+    });
+  });
+}
 
 // --- Smartlead (cold-email API; key as ?api_key=) ---------------------------
 async function smartleadCall(path, method, body) {
@@ -345,6 +380,7 @@ function macControl(action, target) {
   const t = String(target || '').trim();
   if (!t) throw new Error('nothing to open');
   if (action === 'open_app') { execFile('open', ['-a', t], () => {}); return 'Opening ' + t + '.'; }
+  if (action === 'open_path') { execFile('open', [t], () => {}); return 'Opening ' + (t.split('/').pop() || t) + '.'; }
   let url = t; if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(url)) url = 'https://' + url;   // default to https
   execFile('open', ['-a', 'Google Chrome', url], (err) => { if (err) execFile('open', [url], () => {}); });  // Chrome, else default browser
   return 'Opening ' + url + '.';
@@ -1142,6 +1178,15 @@ ipcMain.handle('orch:ask', async (event, text) => {
                 const msg = (e && e.message) || String(e);
                 results[idx] = { type: 'tool_result', tool_use_id: tu.id, content: 'Could not control the screen: ' + msg + '. The app likely needs Accessibility permission — tell the user to enable Nexus in System Settings → Privacy & Security → Accessibility.', is_error: true };
               }
+            })());
+          } else if (tu.name === 'find_files') {
+            emit('agent', { agentId: 'api', state: 'searching' });
+            jobs.push((async () => {
+              try {
+                const out = await findFiles(inp.query, inp.name_only, inp.kind, inp.limit);
+                emit('agent', { agentId: 'api', state: 'done' });
+                results[idx] = { type: 'tool_result', tool_use_id: tu.id, content: out };
+              } catch (e) { emit('agent', { agentId: 'api', state: 'idle' }); results[idx] = { type: 'tool_result', tool_use_id: tu.id, content: 'File search failed: ' + ((e && e.message) || e), is_error: true }; }
             })());
           } else if (tu.name === 'control') {
             try {
