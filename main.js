@@ -209,57 +209,59 @@ function translateKey(text) {
   mods.slice().reverse().forEach((m) => cmds.push('ku:' + m));
   return cmds.length ? cmds : ['kp:return'];
 }
-async function execComputerAction(action, input, scale) {
-  const L = (c) => [Math.round((c[0] || 0) / scale), Math.round((c[1] || 0) / scale)];
-  if (action === 'screenshot' || action === 'cursor_position') return;
-  if (action === 'wait') { await new Promise((r) => setTimeout(r, Math.min(5, (input.duration || 1)) * 1000)); return; }
-  if (action === 'mouse_move' && input.coordinate) { const [x, y] = L(input.coordinate); await sh(CLICLICK, ['m:' + x + ',' + y]); return; }
-  if ((action === 'left_click' || action === 'right_click' || action === 'double_click' || action === 'middle_click') && input.coordinate) {
-    const [x, y] = L(input.coordinate); const op = { left_click: 'c', right_click: 'rc', double_click: 'dc', middle_click: 'c' }[action];
-    await sh(CLICLICK, [op + ':' + x + ',' + y]); return;
-  }
-  if (action === 'left_click_drag' && input.coordinate) { const [x, y] = L(input.coordinate); const s = L(input.start_coordinate || input.coordinate); await sh(CLICLICK, ['dd:' + s[0] + ',' + s[1], 'du:' + x + ',' + y]); return; }
-  if (action === 'type') { await sh(CLICLICK, ['-w', '8', 't:' + String(input.text || '')]); return; }
-  if (action === 'key') { await sh(CLICLICK, translateKey(input.text)); return; }
-  if (action === 'scroll') {
-    const dir = input.scroll_direction, amt = Math.min(12, input.scroll_amount || 3);
-    if (input.coordinate) { const [x, y] = L(input.coordinate); await sh(CLICLICK, ['m:' + x + ',' + y]); }
-    const key = { up: 'arrow-up', down: 'arrow-down', left: 'arrow-left', right: 'arrow-right' }[dir] || 'arrow-down';
-    const seq = []; for (let i = 0; i < amt; i++) seq.push('kp:' + key); await sh(CLICLICK, seq); return;
+// The built-in computer tool isn't supported on current models, so we give Sea
+// a custom one-action-at-a-time tool over ordinary screenshots (regular vision).
+const SCREEN_ACTION_TOOL = {
+  name: 'screen_action',
+  description: 'Do ONE action on the screen; you then receive a fresh screenshot. x,y are PIXELS in the screenshot you were shown (top-left = 0,0).',
+  input_schema: {
+    type: 'object',
+    properties: {
+      action: { type: 'string', enum: ['click', 'double_click', 'right_click', 'move', 'type', 'key', 'scroll', 'done'] },
+      x: { type: 'number' }, y: { type: 'number' },
+      text: { type: 'string', description: 'action=type: text to type. action=key: a key or combo like "Return", "cmd+l", "cmd+t".' },
+      scroll_direction: { type: 'string', enum: ['up', 'down'] },
+      summary: { type: 'string', description: 'action=done: one short sentence on what you accomplished.' },
+    },
+    required: ['action'],
+  },
+};
+async function execCustomAction(a, scale) {
+  const x = Math.round((a.x || 0) / scale), y = Math.round((a.y || 0) / scale);
+  switch (a.action) {
+    case 'click': await sh(CLICLICK, ['c:' + x + ',' + y]); break;
+    case 'double_click': await sh(CLICLICK, ['dc:' + x + ',' + y]); break;
+    case 'right_click': await sh(CLICLICK, ['rc:' + x + ',' + y]); break;
+    case 'move': await sh(CLICLICK, ['m:' + x + ',' + y]); break;
+    case 'type': await sh(CLICLICK, ['-w', '8', 't:' + String(a.text || '')]); break;
+    case 'key': await sh(CLICLICK, translateKey(a.text)); break;
+    case 'scroll': { const k = a.scroll_direction === 'up' ? 'arrow-up' : 'arrow-down'; const seq = []; for (let i = 0; i < 5; i++) seq.push('kp:' + k); await sh(CLICLICK, seq); break; }
+    default: break;
   }
 }
 async function computerUse(goal, emit) {
   const scr = await getScreen();
   const scale = Math.min(1, 1280 / scr.w);
   const dw = Math.round(scr.w * scale), dh = Math.round(scr.h * scale);
-  const tools = [{ type: 'computer_20250124', name: 'computer', display_width_px: dw, display_height_px: dh, display_number: 1 }];
-  const messages = [{ role: 'user', content: 'Task on my Mac: ' + goal + '\n\nStart by taking a screenshot, then operate the mouse/keyboard step by step to accomplish it. If a page/URL is wrong, navigate by clicking to the right place. Keep going until it is done, then briefly tell me what you did.' }];
-  let summary = '';
+  const sys = 'You operate the user\'s Mac by looking at screenshots and issuing ONE screen_action at a time. Each screenshot is ' + dw + 'x' + dh + ' pixels (top-left origin); x,y are pixels in that image. Take the single best next step toward the goal (click a button/link/field, type, press a key, or scroll), then you get a new screenshot. To open a URL in Chrome: key "cmd+l" to focus the address bar, type the URL, then key "Return". New tab = key "cmd+t". Be precise about where you click. Call action "done" with a short summary when finished. Never ask the user questions — just get it done.';
+  let shot = await grabScreen(dw, dh);
+  const messages = [{ role: 'user', content: [{ type: 'text', text: 'Goal: ' + goal }, { type: 'image', source: { type: 'base64', media_type: 'image/png', data: shot } }] }];
   for (let i = 0; i < 20; i++) {
     let msg;
-    try { msg = await client.beta.messages.create({ model: directorModel(), max_tokens: 1600, tools, messages, betas: ['computer-use-2025-01-24'] }); }
-    catch (e) { throw new Error('computer-use API: ' + ((e && e.message) || e)); }
+    try { msg = await client.messages.create({ model: directorModel(), max_tokens: 1024, system: sys, tools: [SCREEN_ACTION_TOOL], tool_choice: { type: 'any' }, messages }); }
+    catch (e) { throw new Error('vision API: ' + ((e && e.message) || e)); }
     messages.push({ role: 'assistant', content: msg.content });
-    const tus = msg.content.filter((b) => b.type === 'tool_use');
-    if (msg.stop_reason === 'tool_use' && tus.length) {
-      const results = [];
-      for (const tu of tus) {
-        if (tu.name === 'computer') {
-          const a = (tu.input || {}).action || '';
-          emit && emit('notice', { text: 'Sea: ' + a + ((tu.input && tu.input.coordinate) ? ' @' + tu.input.coordinate.join(',') : '') });
-          try { await execComputerAction(a, tu.input || {}, scale); } catch (_) {}
-          await new Promise((r) => setTimeout(r, 350));   // let the UI settle before the next screenshot
-          const b64 = await grabScreen(dw, dh);
-          results.push({ type: 'tool_result', tool_use_id: tu.id, content: b64 ? [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: b64 } }] : 'screenshot failed' });
-        } else { results.push({ type: 'tool_result', tool_use_id: tu.id, content: 'Unsupported tool.', is_error: true }); }
-      }
-      messages.push({ role: 'user', content: results });
-      continue;
-    }
-    summary = msg.content.filter((b) => b.type === 'text').map((b) => b.text).join(' ').trim();
-    break;
+    const tu = msg.content.find((b) => b.type === 'tool_use');
+    if (!tu) return msg.content.filter((b) => b.type === 'text').map((b) => b.text).join(' ').trim() || 'Done.';
+    const a = tu.input || {};
+    if (a.action === 'done') return a.summary || 'Done.';
+    emit && emit('notice', { text: 'Sea: ' + a.action + (a.x != null ? ' @' + Math.round(a.x) + ',' + Math.round(a.y) : (a.text ? ' "' + String(a.text).slice(0, 24) + '"' : '')) });
+    try { await execCustomAction(a, scale); } catch (_) {}
+    await new Promise((r) => setTimeout(r, 400));
+    shot = await grabScreen(dw, dh);
+    messages.push({ role: 'user', content: [{ type: 'tool_result', tool_use_id: tu.id, content: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: shot } }] }] });
   }
-  return summary || 'Done.';
+  return 'Stopped after several steps — tell me if it got close.';
 }
 
 // --- Mac control: open apps + URLs (in Chrome) ------------------------------
