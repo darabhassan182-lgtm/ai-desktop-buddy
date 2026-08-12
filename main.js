@@ -37,6 +37,7 @@ You also have a long-term MEMORY. Use the \`remember\` tool whenever the user sh
 LEARN AND ADAPT to the user over time: notice their habits, routines, favourite apps/sites/music, the people they contact, and how they like things done — and proactively \`remember\` them (e.g. "morning routine = open Chrome + Gmail", "favourite focus music = lo-fi beats on YouTube", "usually emails Areeba about design"). When you spot a repeated pattern, save it and use it so a short command triggers the whole thing next time. Prefer acting on remembered shortcuts over re-asking.
 Wire can access the user's SMARTLEAD cold-email account with the \`smartlead\` tool — list campaigns, pull a campaign's analytics (opens/replies/etc.), read leads, or add leads. If it isn't connected, tell them to click the ⚡ button to add their Smartlead API key.
 You can OPEN things on the user's Mac with the \`control\` tool — launch apps (Chrome, Netflix, Spotify…) and open URLs in Chrome (websites, a YouTube search to play a song/video, etc.). When the user says open/play/put on/go to something, just do it with \`control\`; you don't need permission to open apps or websites.
+You can also TAKE FULL CONTROL of the mouse and keyboard with \`take_control\` to complete a task visually — navigate a site, click through pages, fill forms, or recover when a URL is wrong by clicking to the right place. BE AUTONOMOUS: don't stop and ask the user for each little step or say you "can't" reach a page — if opening a URL might be wrong or you need to click around, use \`take_control\` with the full goal and get it done. Only pause to confirm before irreversible/sensitive actions (sending money, deleting, posting publicly, sending a message/email).
 You control the user's HOLOGRAPHIC DISPLAY with the \`show\` tool. Be visual, like Jarvis: whenever a place, city, country, or landmark comes up, call \`show\` with kind 'map' and that place so the map flies to it on screen; when a short summary, list, or set of facts would help, call \`show\` with kind 'info'. Do this proactively and in ADDITION to speaking.
 You can READ and SEARCH the user's Gmail with \`gmail_search\` (find an address, look up or check emails — returns senders/subjects/snippets + ids) and \`gmail_read\` (full body of one message by id, for summarizing). Use these to actually look things up instead of saying you can't.
 You can use SLACK when connected: \`slack_search\` to find/read messages, and \`slack_send\` to post a message (channel can be #channel or @person). Confirm before sending a Slack message, same as email. If a Slack action fails because it isn't connected, tell them to click the 💬 button to connect Slack.
@@ -140,7 +141,12 @@ const SMARTLEAD_TOOL = {
     required: ['action'],
   },
 };
-const DIRECTOR_TOOLS = [DELEGATE_TOOL, REMEMBER_TOOL, FORGET_TOOL, SHOW_TOOL, SEND_EMAIL_TOOL, GMAIL_SEARCH_TOOL, GMAIL_READ_TOOL, SLACK_SEND_TOOL, SLACK_SEARCH_TOOL, CONTROL_TOOL, SMARTLEAD_TOOL];
+const TAKE_CONTROL_TOOL = {
+  name: 'take_control',
+  description: "Take over the mouse and keyboard to actually DO a task on the user's screen — navigate a website, click through an app, fill a form, or fix a wrong page by clicking to the right place. Use this whenever a task needs operating the computer visually (not just opening a URL). Prefer this over `control` when the exact URL is unknown or you need to click around. `goal` = a clear, complete description of what to accomplish.",
+  input_schema: { type: 'object', properties: { goal: { type: 'string' } }, required: ['goal'] },
+};
+const DIRECTOR_TOOLS = [DELEGATE_TOOL, REMEMBER_TOOL, FORGET_TOOL, SHOW_TOOL, SEND_EMAIL_TOOL, GMAIL_SEARCH_TOOL, GMAIL_READ_TOOL, SLACK_SEND_TOOL, SLACK_SEARCH_TOOL, CONTROL_TOOL, SMARTLEAD_TOOL, TAKE_CONTROL_TOOL];
 
 // --- Smartlead (cold-email API; key as ?api_key=) ---------------------------
 async function smartleadCall(path, method, body) {
@@ -167,6 +173,93 @@ async function smartleadAction(action, campaignId, leads, query) {
   if (action === 'list_leads') return JSON.stringify(await smartleadCall('/campaigns/' + campaignId + '/leads', 'GET')).slice(0, 1600);
   if (action === 'add_leads') { const r = await smartleadCall('/campaigns/' + campaignId + '/leads', 'POST', { lead_list: (leads || []).slice(0, 400) }); return 'Add leads result: ' + JSON.stringify(r).slice(0, 500); }
   throw new Error('Unknown Smartlead action');
+}
+
+// --- Full computer control: Sea sees the screen + moves/clicks the mouse ----
+function sh(cmd, args) { return new Promise((r) => execFile(cmd, args, () => r())); }
+// A Finder-launched app has a minimal PATH, so resolve cliclick's absolute path.
+const CLICLICK = ['/opt/homebrew/bin/cliclick', '/usr/local/bin/cliclick', '/usr/bin/cliclick'].find((p) => { try { return fs.existsSync(p); } catch (_) { return false; } }) || 'cliclick';
+function getScreen() {
+  return new Promise((resolve) => {
+    execFile('osascript', ['-e', 'tell application "Finder" to get bounds of window of desktop'], (e, out) => {
+      const m = String(out || '').match(/(\d+),\s*(\d+),\s*(\d+),\s*(\d+)/);
+      resolve(m ? { w: parseInt(m[3], 10), h: parseInt(m[4], 10) } : { w: 1512, h: 982 });
+    });
+  });
+}
+async function grabScreen(dw, dh) {
+  const tmp = path.join(os.tmpdir(), 'nx-shot-' + Date.now() + '.png');
+  await sh('screencapture', ['-x', '-C', '-t', 'png', tmp]);
+  await sh('sips', ['-z', String(dh), String(dw), tmp]);
+  let b = ''; try { b = fs.readFileSync(tmp).toString('base64'); } catch (_) {}
+  try { fs.unlinkSync(tmp); } catch (_) {}
+  return b;
+}
+function translateKey(text) {
+  const named = { return: 'return', enter: 'return', tab: 'tab', escape: 'esc', esc: 'esc', space: 'space', backspace: 'delete', delete: 'delete', up: 'arrow-up', down: 'arrow-down', left: 'arrow-left', right: 'arrow-right', page_up: 'page-up', page_down: 'page-down', home: 'home', end: 'end' };
+  const parts = String(text || '').split('+'); const mods = []; let key = null;
+  for (const p of parts) { const t = p.trim().toLowerCase();
+    if (['cmd', 'command', 'super', 'meta'].includes(t)) mods.push('cmd');
+    else if (['ctrl', 'control'].includes(t)) mods.push('ctrl');
+    else if (['alt', 'option'].includes(t)) mods.push('alt');
+    else if (t === 'shift') mods.push('shift');
+    else key = p.trim(); }
+  const cmds = []; mods.forEach((m) => cmds.push('kd:' + m));
+  if (key) { const nk = named[key.toLowerCase()]; cmds.push(nk ? ('kp:' + nk) : ('t:' + key)); }
+  mods.slice().reverse().forEach((m) => cmds.push('ku:' + m));
+  return cmds.length ? cmds : ['kp:return'];
+}
+async function execComputerAction(action, input, scale) {
+  const L = (c) => [Math.round((c[0] || 0) / scale), Math.round((c[1] || 0) / scale)];
+  if (action === 'screenshot' || action === 'cursor_position') return;
+  if (action === 'wait') { await new Promise((r) => setTimeout(r, Math.min(5, (input.duration || 1)) * 1000)); return; }
+  if (action === 'mouse_move' && input.coordinate) { const [x, y] = L(input.coordinate); await sh(CLICLICK, ['m:' + x + ',' + y]); return; }
+  if ((action === 'left_click' || action === 'right_click' || action === 'double_click' || action === 'middle_click') && input.coordinate) {
+    const [x, y] = L(input.coordinate); const op = { left_click: 'c', right_click: 'rc', double_click: 'dc', middle_click: 'c' }[action];
+    await sh(CLICLICK, [op + ':' + x + ',' + y]); return;
+  }
+  if (action === 'left_click_drag' && input.coordinate) { const [x, y] = L(input.coordinate); const s = L(input.start_coordinate || input.coordinate); await sh(CLICLICK, ['dd:' + s[0] + ',' + s[1], 'du:' + x + ',' + y]); return; }
+  if (action === 'type') { await sh(CLICLICK, ['-w', '8', 't:' + String(input.text || '')]); return; }
+  if (action === 'key') { await sh(CLICLICK, translateKey(input.text)); return; }
+  if (action === 'scroll') {
+    const dir = input.scroll_direction, amt = Math.min(12, input.scroll_amount || 3);
+    if (input.coordinate) { const [x, y] = L(input.coordinate); await sh(CLICLICK, ['m:' + x + ',' + y]); }
+    const key = { up: 'arrow-up', down: 'arrow-down', left: 'arrow-left', right: 'arrow-right' }[dir] || 'arrow-down';
+    const seq = []; for (let i = 0; i < amt; i++) seq.push('kp:' + key); await sh(CLICLICK, seq); return;
+  }
+}
+async function computerUse(goal, emit) {
+  const scr = await getScreen();
+  const scale = Math.min(1, 1280 / scr.w);
+  const dw = Math.round(scr.w * scale), dh = Math.round(scr.h * scale);
+  const tools = [{ type: 'computer_20250124', name: 'computer', display_width_px: dw, display_height_px: dh, display_number: 1 }];
+  const messages = [{ role: 'user', content: 'Task on my Mac: ' + goal + '\n\nStart by taking a screenshot, then operate the mouse/keyboard step by step to accomplish it. If a page/URL is wrong, navigate by clicking to the right place. Keep going until it is done, then briefly tell me what you did.' }];
+  let summary = '';
+  for (let i = 0; i < 20; i++) {
+    let msg;
+    try { msg = await client.beta.messages.create({ model: directorModel(), max_tokens: 1600, tools, messages, betas: ['computer-use-2025-01-24'] }); }
+    catch (e) { throw new Error('computer-use API: ' + ((e && e.message) || e)); }
+    messages.push({ role: 'assistant', content: msg.content });
+    const tus = msg.content.filter((b) => b.type === 'tool_use');
+    if (msg.stop_reason === 'tool_use' && tus.length) {
+      const results = [];
+      for (const tu of tus) {
+        if (tu.name === 'computer') {
+          const a = (tu.input || {}).action || '';
+          emit && emit('notice', { text: 'Sea: ' + a + ((tu.input && tu.input.coordinate) ? ' @' + tu.input.coordinate.join(',') : '') });
+          try { await execComputerAction(a, tu.input || {}, scale); } catch (_) {}
+          await new Promise((r) => setTimeout(r, 350));   // let the UI settle before the next screenshot
+          const b64 = await grabScreen(dw, dh);
+          results.push({ type: 'tool_result', tool_use_id: tu.id, content: b64 ? [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: b64 } }] : 'screenshot failed' });
+        } else { results.push({ type: 'tool_result', tool_use_id: tu.id, content: 'Unsupported tool.', is_error: true }); }
+      }
+      messages.push({ role: 'user', content: results });
+      continue;
+    }
+    summary = msg.content.filter((b) => b.type === 'text').map((b) => b.text).join(' ').trim();
+    break;
+  }
+  return summary || 'Done.';
 }
 
 // --- Mac control: open apps + URLs (in Chrome) ------------------------------
@@ -926,6 +1019,18 @@ ipcMain.handle('orch:ask', async (event, text) => {
                 const msg = (e && e.message) || String(e);
                 emit('agent', { agentId: 'api', state: 'idle' });
                 results[idx] = { type: 'tool_result', tool_use_id: tu.id, content: 'Smartlead failed: ' + msg + (/not connected/i.test(msg) ? ' — tell the user to click ⚡ to add their Smartlead API key.' : ''), is_error: true };
+              }
+            })());
+          } else if (tu.name === 'take_control') {
+            emit('manager', { state: 'thinking' });
+            emit('notice', { text: 'Sea is taking control of the screen…' });
+            jobs.push((async () => {
+              try {
+                const r = await computerUse(inp.goal, emit);
+                results[idx] = { type: 'tool_result', tool_use_id: tu.id, content: r || 'Done.' };
+              } catch (e) {
+                const msg = (e && e.message) || String(e);
+                results[idx] = { type: 'tool_result', tool_use_id: tu.id, content: 'Could not control the screen: ' + msg + '. The app likely needs Accessibility permission — tell the user to enable Nexus in System Settings → Privacy & Security → Accessibility.', is_error: true };
               }
             })());
           } else if (tu.name === 'control') {
