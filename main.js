@@ -221,7 +221,15 @@ async function readFileSmart(p) {
   if (IMG[ext]) { try { return { kind: 'image', b64: fs.readFileSync(p).toString('base64'), media_type: IMG[ext] }; } catch (_) {} }
   if (['heic', 'heif', 'tiff', 'tif'].includes(ext)) { const tmp = path.join(os.tmpdir(), 'nx-i-' + Date.now() + '.png'); await sh('sips', ['-s', 'format', 'png', p, '--out', tmp]); try { const b = fs.readFileSync(tmp).toString('base64'); fs.unlinkSync(tmp); return { kind: 'image', b64: b, media_type: 'image/png' }; } catch (_) {} }
   const TEXT = ['txt', 'text', 'md', 'markdown', 'json', 'jsonl', 'csv', 'tsv', 'js', 'mjs', 'cjs', 'ts', 'tsx', 'jsx', 'py', 'rb', 'go', 'rs', 'java', 'c', 'cc', 'cpp', 'h', 'hpp', 'html', 'htm', 'xml', 'yaml', 'yml', 'toml', 'ini', 'cfg', 'conf', 'log', 'sh', 'zsh', 'bash', 'css', 'scss', 'less', 'sql', 'env', 'blueprint', 'geojson', 'svg', 'php', 'pl', 'lua', 'r', 'swift', 'kt', 'gradle', 'properties', 'plist', 'srt', 'vtt'];
-  if (TEXT.includes(ext)) { try { return { kind: 'text', text: cap(fs.readFileSync(p, 'utf8')) }; } catch (_) {} }
+  if (TEXT.includes(ext)) {
+    try {
+      const raw = fs.readFileSync(p, 'utf8');
+      if (ext === 'json' || ext === 'blueprint' || /\.blueprint\.json$/i.test(p)) {   // Make blueprint → compact flow map
+        try { const j = JSON.parse(raw); const b = j.blueprint || j; if (b && Array.isArray(b.flow)) return { kind: 'text', text: 'Make.com blueprint file:\n' + summarizeBlueprint(b).slice(0, 40000) }; } catch (_) {}
+      }
+      return { kind: 'text', text: cap(raw) };
+    } catch (_) {}
+  }
   if (ext === 'pdf') {
     if (PDFTOTEXT) { const out = await runOut(PDFTOTEXT, ['-nopgbrk', p, '-']); if (out.trim()) return { kind: 'text', text: cap(out) }; }
     const tmp = path.join(os.tmpdir(), 'nx-pdf-' + Date.now() + '.png'); await sh('sips', ['-s', 'format', 'png', p, '--out', tmp]);
@@ -286,6 +294,28 @@ async function makeTeam() {
   if (!team) throw new Error('No Make team found');
   c.makeTeamId = team.id; saveConfig(c); return team.id;
 }
+// Parse a Make blueprint into a compact, COMPLETE flow map — so even a 25+ module
+// scenario fits cleanly in context instead of being truncated raw JSON.
+function countModules(flow) { let n = 0; (flow || []).forEach((m) => { n++; if (Array.isArray(m.routes)) m.routes.forEach((rt) => { n += countModules(rt && rt.flow); }); }); return n; }
+function summarizeBlueprint(bp) {
+  bp = (bp && (bp.blueprint || bp)) || {};
+  const short = (v) => { try { const s = typeof v === 'string' ? v : JSON.stringify(v); return s.length > 90 ? s.slice(0, 90) + '…' : s; } catch (_) { return ''; } };
+  const lines = [];
+  function walk(flow, depth) {
+    (flow || []).forEach((m) => {
+      const ind = '  '.repeat(depth);
+      const mod = m.module || m.type || '?';
+      const label = (m.metadata && m.metadata.designer && (m.metadata.designer.name || m.metadata.designer.label)) || m.label || '';
+      const p = Object.assign({}, m.parameters || {}, m.mapper || {});
+      const params = Object.keys(p).slice(0, 8).map((k) => k + '=' + short(p[k])).filter((s) => s.length < 110).join(', ');
+      lines.push(ind + '#' + (m.id != null ? m.id : '?') + ' ' + mod + (label ? ' ["' + label + '"]' : '') + (params ? ' — ' + params : ''));
+      if (m.filter && (m.filter.conditions || m.filter.name)) lines.push(ind + '   ↳ filter: ' + short(m.filter.name || m.filter.conditions));
+      if (Array.isArray(m.routes)) m.routes.forEach((rt, i) => { lines.push(ind + '   ├─ route ' + (i + 1) + ':'); walk(rt && rt.flow, depth + 2); });
+    });
+  }
+  walk(bp.flow, 0);
+  return 'Scenario "' + (bp.name || '(unnamed)') + '" — ' + countModules(bp.flow) + ' modules:\n' + lines.join('\n');
+}
 async function makeAction(inp) {
   const a = inp.action;
   if (a === 'list_scenarios') {
@@ -295,7 +325,7 @@ async function makeAction(inp) {
     if (inp.query) { const q = String(inp.query).toLowerCase(); arr = arr.filter((s) => String(s.name || '').toLowerCase().indexOf(q) !== -1); }
     return arr.length ? ('Total ' + arr.length + ':\n' + arr.slice(0, 60).map((s) => 'id=' + s.id + ' | ' + (s.name || '') + ' | ' + (s.isActive ? 'ON' : 'off')).join('\n')) : 'No scenarios found.';
   }
-  if (a === 'get_blueprint') { const bp = await makeCall('GET', '/scenarios/' + inp.scenario_id + '/blueprint'); return JSON.stringify((bp.response && bp.response.blueprint) || bp).slice(0, 8000); }
+  if (a === 'get_blueprint') { const bp = await makeCall('GET', '/scenarios/' + inp.scenario_id + '/blueprint'); return summarizeBlueprint((bp.response && bp.response.blueprint) || bp).slice(0, 30000); }
   if (a === 'create_scenario') {
     const team = await makeTeam();
     const bp = inp.blueprint || {}; if (inp.name && !bp.name) bp.name = inp.name;
@@ -1103,7 +1133,7 @@ async function runSubAgent(id, task, emit) {
   let text = '';
   for (let i = 0; i < 8; i++) {
     const stream = client.messages.stream({
-      model: 'claude-sonnet-5', max_tokens: 2048, system: a.system,
+      model: 'claude-sonnet-5', max_tokens: 4096, system: a.system,
       tools: (a.tools && a.tools.length) ? a.tools : undefined, messages,
     });
     const msg = await stream.finalMessage();
