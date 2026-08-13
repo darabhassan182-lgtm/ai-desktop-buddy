@@ -15,13 +15,16 @@ let client = null;
 
 const MAKE_TOOL = {
   name: 'make',
-  description: "Operate the user's Make.com account. actions: 'list_scenarios' (optional `query` filters by name); 'get_blueprint' (needs scenario_id — returns a COMPACT module-by-module map for an OVERVIEW; long values are shortened); 'get_module' (needs scenario_id + module_id — returns ONE module's FULL untruncated config: raw HTTP body, full prompt text, every parameter/mapper — use this to read or EDIT a module's exact values instead of guessing); 'create_scenario' (needs `name` + `blueprint` object); 'run_scenario'/'activate'/'deactivate' (need scenario_id); 'list_connections'; 'list_data_stores'.",
+  description: "Operate the user's Make.com account. actions: 'list_scenarios' (optional `query` filters by name); 'get_blueprint' (needs scenario_id — COMPACT module map for an OVERVIEW; long values shortened); 'get_module' (needs scenario_id + module_id — ONE module's FULL raw JSON: body, prompt, every parameter/mapper/metadata — use before editing); 'clone_scenario' (needs scenario_id = the SOURCE to copy + optional `name` for the new one — copies an existing WORKING scenario exactly; THIS IS THE RELIABLE WAY TO BUILD, then customize with update_module); 'update_module' (needs scenario_id + module_id + `parameters` and/or `mapper` objects to merge in — edits one module of an existing scenario); 'create_scenario' (needs `name` + a full `blueprint` object — only for genuinely novel simple flows; prefer clone_scenario); 'run_scenario'/'activate'/'deactivate' (need scenario_id); 'list_connections'; 'list_data_stores'.",
   input_schema: {
     type: 'object',
     properties: {
-      action: { type: 'string', enum: ['list_scenarios', 'get_blueprint', 'get_module', 'create_scenario', 'run_scenario', 'activate', 'deactivate', 'list_connections', 'list_data_stores'] },
-      scenario_id: { type: 'string' }, module_id: { type: 'string', description: 'For get_module: the module # to read in full (ids come from get_blueprint).' },
+      action: { type: 'string', enum: ['list_scenarios', 'get_blueprint', 'get_module', 'clone_scenario', 'update_module', 'create_scenario', 'run_scenario', 'activate', 'deactivate', 'list_connections', 'list_data_stores'] },
+      scenario_id: { type: 'string', description: 'Target scenario id; for clone_scenario this is the SOURCE to copy.' },
+      module_id: { type: 'string', description: 'For get_module/update_module: the module # (ids come from get_blueprint).' },
       name: { type: 'string' }, query: { type: 'string' },
+      parameters: { type: 'object', description: 'For update_module: fields to merge into the module.parameters.' },
+      mapper: { type: 'object', description: 'For update_module: fields to merge into the module.mapper (the mapped input values).' },
       blueprint: { type: 'object', description: 'For create_scenario: the scenario blueprint object (name, flow[], metadata).' },
     },
     required: ['action'],
@@ -40,7 +43,7 @@ const SUBAGENTS = {
   inbox:     { name: 'Echo',
     system: 'You are Echo, a communications specialist. Draft the requested Slack message or email reply in an appropriate tone. Return the draft.', tools: [] },
   api:       { name: 'Wire',
-    system: "You are Wire, an API/automation specialist AND the user's Make.com expert. For automation/API tasks give concrete steps, code, or payloads. For Make.com: BUILD scenarios (emit a valid blueprint object and call make.create_scenario), STUDY them (make.get_blueprint for the module-by-module overview, then explain in plain English), and list/run/activate scenarios with the `make` tool. Always name a created scenario clearly and confirm what it will do.\n\nIMPORTANT: get_blueprint gives a COMPACT map where long values (HTTP request bodies, GPT/AI prompts, mapped fields) are shortened with '…'. When the user asks about, quotes, or wants to EDIT a specific module's exact content, ALWAYS call make.get_module with that scenario_id + module_id first to read the FULL untruncated config. NEVER fabricate or guess a body, prompt, saved-search id, or field value — if you haven't fetched it with get_module, fetch it.\n\nWHEN BUILDING: emit the COMPLETE blueprint in ONE make.create_scenario call — never build module-by-module, never split it across turns, and never promise to 'report after each module'. As soon as create_scenario returns, state the REAL scenario name and id it returned. If it returns an error, report the exact error text — never claim a scenario was created when it wasn't. Keep blueprints as compact as possible so they fit in one response.\n\n" + MAKE_KNOWLEDGE,
+    system: "You are Wire, an API/automation specialist AND the user's Make.com expert. For automation/API tasks give concrete steps, code, or payloads. For Make.com: BUILD scenarios (emit a valid blueprint object and call make.create_scenario), STUDY them (make.get_blueprint for the module-by-module overview, then explain in plain English), and list/run/activate scenarios with the `make` tool. Always name a created scenario clearly and confirm what it will do.\n\nIMPORTANT: get_blueprint gives a COMPACT map where long values (HTTP request bodies, GPT/AI prompts, mapped fields) are shortened with '…'. When the user asks about, quotes, or wants to EDIT a specific module's exact content, ALWAYS call make.get_module with that scenario_id + module_id first to read the FULL untruncated config. NEVER fabricate or guess a body, prompt, saved-search id, or field value — if you haven't fetched it with get_module, fetch it.\n\nWHEN BUILDING A NEW AUTOMATION, the RELIABLE way is to CLONE an existing working scenario and customize it — do NOT hand-write a full blueprint from scratch (that fails, because you can't know the exact module identifiers, versions, connection ids, and metadata). Workflow: (1) make.list_scenarios to find the closest existing template; (2) make.clone_scenario with scenario_id = that source + a new `name`; (3) make.get_module on the modules you must change to read their real config; (4) make.update_module with the new `parameters`/`mapper` values (e.g. the new Google Sheet id, filter, search); (5) report the REAL new scenario name and id. Do everything in this SAME turn — never promise to build 'module by module' later. Only use create_scenario (hand-written blueprint) for a genuinely simple, novel flow when NO similar scenario exists. If any step returns an error or BUILD_INCOMPLETE, report the exact reason — never claim success you didn't get.\n\n" + MAKE_KNOWLEDGE,
     tools: [MAKE_TOOL] },
   files:     { name: 'Sift',
     system: "You are Sift, the file specialist — you find and UNDERSTAND files of ANY type, fast. Use find_files to locate and read_file to open/parse anything: text, code, JSON, CSV, PDFs, Word/Excel/PowerPoint, images (you receive them to view), or unknown/binary formats (read_file identifies the type, extracts readable text, and opens the file in its app). If a format is unfamiliar, read_file still returns its type + extracted text — reason about the structure from there and explain it. Answer the user's question about the file plainly and precisely, and name the file.",
@@ -346,7 +349,29 @@ async function makeAction(inp) {
     const b = (bp.response && bp.response.blueprint) || bp;
     const m = findModule(b.flow, inp.module_id);
     if (!m) return 'No module #' + inp.module_id + ' found in scenario ' + inp.scenario_id + '.';
-    return 'Module #' + inp.module_id + ' (' + (m.module || '?') + ') — FULL config:\n' + JSON.stringify({ parameters: m.parameters, mapper: m.mapper, filter: m.filter }, null, 2).slice(0, 26000);
+    return 'Module #' + inp.module_id + ' (' + (m.module || '?') + ') — FULL raw JSON:\n' + JSON.stringify(m, null, 2).slice(0, 26000);
+  }
+  if (a === 'clone_scenario') {
+    const team = await makeTeam();
+    const src = await makeCall('GET', '/scenarios/' + inp.scenario_id + '/blueprint');
+    const bp = (src.response && src.response.blueprint) || src.blueprint || src;
+    if (!bp || !Array.isArray(bp.flow) || !bp.flow.length) return 'BUILD_INCOMPLETE: could not read source scenario ' + inp.scenario_id + ' to clone.';
+    bp.name = inp.name || ((bp.name || 'Scenario') + ' (Nexus copy)');
+    const scheduling = (bp.metadata && bp.metadata.instant) ? { type: 'immediately' } : { type: 'indefinitely', interval: 900 };
+    const r = await makeCall('POST', '/scenarios', { blueprint: JSON.stringify(bp), teamId: team, scheduling: JSON.stringify(scheduling) });
+    const id = r.scenario && r.scenario.id;
+    if (!id) return 'BUILD_INCOMPLETE: clone returned no scenario id — ' + JSON.stringify(r).slice(0, 300);
+    return 'Cloned scenario ' + inp.scenario_id + ' → NEW scenario id=' + id + ' name="' + bp.name + '" (' + countModules(bp.flow) + ' modules copied, created OFF). Now use get_module + update_module to customize it, then activate.';
+  }
+  if (a === 'update_module') {
+    const src = await makeCall('GET', '/scenarios/' + inp.scenario_id + '/blueprint');
+    const bp = (src.response && src.response.blueprint) || src.blueprint || src;
+    const m = findModule(bp.flow, inp.module_id);
+    if (!m) return 'No module #' + inp.module_id + ' in scenario ' + inp.scenario_id + '.';
+    if (inp.parameters && typeof inp.parameters === 'object') m.parameters = Object.assign({}, m.parameters || {}, inp.parameters);
+    if (inp.mapper && typeof inp.mapper === 'object') m.mapper = Object.assign({}, m.mapper || {}, inp.mapper);
+    await makeCall('PATCH', '/scenarios/' + inp.scenario_id, { blueprint: JSON.stringify(bp) });
+    return 'Updated module #' + inp.module_id + ' in scenario ' + inp.scenario_id + '. It now has: ' + JSON.stringify({ parameters: m.parameters, mapper: m.mapper }).slice(0, 1800);
   }
   if (a === 'create_scenario') {
     const team = await makeTeam();
