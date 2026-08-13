@@ -577,16 +577,8 @@
       }
     });
 
-    // Dismiss the answer card on an outside click.
-    on(document, 'pointerdown', function (e) {
-      var card = answerCardEl();
-      if (!card || !card.classList || !card.classList.contains('show')) return;
-      var t = e && e.target;
-      if (t && (card.contains(t))) return;
-      var bar = $('commandBar');
-      if (bar && t && bar.contains(t)) return; // typing shouldn't dismiss
-      hideAnswerCard();
-    });
+    // The answer card stays until you close it (so you can read/copy it).
+    on($('answerClose'), 'click', function () { hideAnswerCard(); });
 
     // Keep the scene fit to the window.
     on(window, 'resize', function () { W('resize'); });

@@ -15,12 +15,13 @@ let client = null;
 
 const MAKE_TOOL = {
   name: 'make',
-  description: "Operate the user's Make.com account. actions: 'list_scenarios' (optional `query` filters by name), 'get_blueprint' (needs scenario_id — returns the scenario's blueprint JSON to STUDY), 'create_scenario' (needs `name` + `blueprint` = the scenario blueprint object with flow/metadata), 'run_scenario'/'activate'/'deactivate' (need scenario_id), 'list_connections', 'list_data_stores'.",
+  description: "Operate the user's Make.com account. actions: 'list_scenarios' (optional `query` filters by name); 'get_blueprint' (needs scenario_id — returns a COMPACT module-by-module map for an OVERVIEW; long values are shortened); 'get_module' (needs scenario_id + module_id — returns ONE module's FULL untruncated config: raw HTTP body, full prompt text, every parameter/mapper — use this to read or EDIT a module's exact values instead of guessing); 'create_scenario' (needs `name` + `blueprint` object); 'run_scenario'/'activate'/'deactivate' (need scenario_id); 'list_connections'; 'list_data_stores'.",
   input_schema: {
     type: 'object',
     properties: {
-      action: { type: 'string', enum: ['list_scenarios', 'get_blueprint', 'create_scenario', 'run_scenario', 'activate', 'deactivate', 'list_connections', 'list_data_stores'] },
-      scenario_id: { type: 'string' }, name: { type: 'string' }, query: { type: 'string' },
+      action: { type: 'string', enum: ['list_scenarios', 'get_blueprint', 'get_module', 'create_scenario', 'run_scenario', 'activate', 'deactivate', 'list_connections', 'list_data_stores'] },
+      scenario_id: { type: 'string' }, module_id: { type: 'string', description: 'For get_module: the module # to read in full (ids come from get_blueprint).' },
+      name: { type: 'string' }, query: { type: 'string' },
       blueprint: { type: 'object', description: 'For create_scenario: the scenario blueprint object (name, flow[], metadata).' },
     },
     required: ['action'],
@@ -39,7 +40,7 @@ const SUBAGENTS = {
   inbox:     { name: 'Echo',
     system: 'You are Echo, a communications specialist. Draft the requested Slack message or email reply in an appropriate tone. Return the draft.', tools: [] },
   api:       { name: 'Wire',
-    system: "You are Wire, an API/automation specialist AND the user's Make.com expert. For automation/API tasks give concrete steps, code, or payloads. For Make.com: BUILD scenarios (emit a valid blueprint object and call make.create_scenario), STUDY them (make.get_blueprint then explain in plain English), and list/run/activate scenarios with the `make` tool. Always name a created scenario clearly and confirm what it will do.\n\n" + MAKE_KNOWLEDGE,
+    system: "You are Wire, an API/automation specialist AND the user's Make.com expert. For automation/API tasks give concrete steps, code, or payloads. For Make.com: BUILD scenarios (emit a valid blueprint object and call make.create_scenario), STUDY them (make.get_blueprint for the module-by-module overview, then explain in plain English), and list/run/activate scenarios with the `make` tool. Always name a created scenario clearly and confirm what it will do.\n\nIMPORTANT: get_blueprint gives a COMPACT map where long values (HTTP request bodies, GPT/AI prompts, mapped fields) are shortened with '…'. When the user asks about, quotes, or wants to EDIT a specific module's exact content, ALWAYS call make.get_module with that scenario_id + module_id first to read the FULL untruncated config. NEVER fabricate or guess a body, prompt, saved-search id, or field value — if you haven't fetched it with get_module, fetch it.\n\n" + MAKE_KNOWLEDGE,
     tools: [MAKE_TOOL] },
   files:     { name: 'Sift',
     system: "You are Sift, the file specialist — you find and UNDERSTAND files of ANY type, fast. Use find_files to locate and read_file to open/parse anything: text, code, JSON, CSV, PDFs, Word/Excel/PowerPoint, images (you receive them to view), or unknown/binary formats (read_file identifies the type, extracts readable text, and opens the file in its app). If a format is unfamiliar, read_file still returns its type + extracted text — reason about the structure from there and explain it. Answer the user's question about the file plainly and precisely, and name the file.",
@@ -297,6 +298,13 @@ async function makeTeam() {
 // Parse a Make blueprint into a compact, COMPLETE flow map — so even a 25+ module
 // scenario fits cleanly in context instead of being truncated raw JSON.
 function countModules(flow) { let n = 0; (flow || []).forEach((m) => { n++; if (Array.isArray(m.routes)) m.routes.forEach((rt) => { n += countModules(rt && rt.flow); }); }); return n; }
+function findModule(flow, id) {
+  for (const m of (flow || [])) {
+    if (String(m.id) === String(id)) return m;
+    if (Array.isArray(m.routes)) for (const rt of m.routes) { const f = findModule(rt && rt.flow, id); if (f) return f; }
+  }
+  return null;
+}
 function summarizeBlueprint(bp) {
   bp = (bp && (bp.blueprint || bp)) || {};
   const short = (v) => { try { const s = typeof v === 'string' ? v : JSON.stringify(v); return s.length > 90 ? s.slice(0, 90) + '…' : s; } catch (_) { return ''; } };
@@ -325,7 +333,14 @@ async function makeAction(inp) {
     if (inp.query) { const q = String(inp.query).toLowerCase(); arr = arr.filter((s) => String(s.name || '').toLowerCase().indexOf(q) !== -1); }
     return arr.length ? ('Total ' + arr.length + ':\n' + arr.slice(0, 60).map((s) => 'id=' + s.id + ' | ' + (s.name || '') + ' | ' + (s.isActive ? 'ON' : 'off')).join('\n')) : 'No scenarios found.';
   }
-  if (a === 'get_blueprint') { const bp = await makeCall('GET', '/scenarios/' + inp.scenario_id + '/blueprint'); return summarizeBlueprint((bp.response && bp.response.blueprint) || bp).slice(0, 30000); }
+  if (a === 'get_blueprint') { const bp = await makeCall('GET', '/scenarios/' + inp.scenario_id + '/blueprint'); return summarizeBlueprint((bp.response && bp.response.blueprint) || bp).slice(0, 30000) + '\n\n(For a module\'s FULL body/prompt/params, use get_module with its #id.)'; }
+  if (a === 'get_module') {
+    const bp = await makeCall('GET', '/scenarios/' + inp.scenario_id + '/blueprint');
+    const b = (bp.response && bp.response.blueprint) || bp;
+    const m = findModule(b.flow, inp.module_id);
+    if (!m) return 'No module #' + inp.module_id + ' found in scenario ' + inp.scenario_id + '.';
+    return 'Module #' + inp.module_id + ' (' + (m.module || '?') + ') — FULL config:\n' + JSON.stringify({ parameters: m.parameters, mapper: m.mapper, filter: m.filter }, null, 2).slice(0, 26000);
+  }
   if (a === 'create_scenario') {
     const team = await makeTeam();
     const bp = inp.blueprint || {}; if (inp.name && !bp.name) bp.name = inp.name;
