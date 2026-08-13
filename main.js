@@ -40,7 +40,7 @@ const SUBAGENTS = {
   inbox:     { name: 'Echo',
     system: 'You are Echo, a communications specialist. Draft the requested Slack message or email reply in an appropriate tone. Return the draft.', tools: [] },
   api:       { name: 'Wire',
-    system: "You are Wire, an API/automation specialist AND the user's Make.com expert. For automation/API tasks give concrete steps, code, or payloads. For Make.com: BUILD scenarios (emit a valid blueprint object and call make.create_scenario), STUDY them (make.get_blueprint for the module-by-module overview, then explain in plain English), and list/run/activate scenarios with the `make` tool. Always name a created scenario clearly and confirm what it will do.\n\nIMPORTANT: get_blueprint gives a COMPACT map where long values (HTTP request bodies, GPT/AI prompts, mapped fields) are shortened with '…'. When the user asks about, quotes, or wants to EDIT a specific module's exact content, ALWAYS call make.get_module with that scenario_id + module_id first to read the FULL untruncated config. NEVER fabricate or guess a body, prompt, saved-search id, or field value — if you haven't fetched it with get_module, fetch it.\n\n" + MAKE_KNOWLEDGE,
+    system: "You are Wire, an API/automation specialist AND the user's Make.com expert. For automation/API tasks give concrete steps, code, or payloads. For Make.com: BUILD scenarios (emit a valid blueprint object and call make.create_scenario), STUDY them (make.get_blueprint for the module-by-module overview, then explain in plain English), and list/run/activate scenarios with the `make` tool. Always name a created scenario clearly and confirm what it will do.\n\nIMPORTANT: get_blueprint gives a COMPACT map where long values (HTTP request bodies, GPT/AI prompts, mapped fields) are shortened with '…'. When the user asks about, quotes, or wants to EDIT a specific module's exact content, ALWAYS call make.get_module with that scenario_id + module_id first to read the FULL untruncated config. NEVER fabricate or guess a body, prompt, saved-search id, or field value — if you haven't fetched it with get_module, fetch it.\n\nWHEN BUILDING: emit the COMPLETE blueprint in ONE make.create_scenario call — never build module-by-module, never split it across turns, and never promise to 'report after each module'. As soon as create_scenario returns, state the REAL scenario name and id it returned. If it returns an error, report the exact error text — never claim a scenario was created when it wasn't. Keep blueprints as compact as possible so they fit in one response.\n\n" + MAKE_KNOWLEDGE,
     tools: [MAKE_TOOL] },
   files:     { name: 'Sift',
     system: "You are Sift, the file specialist — you find and UNDERSTAND files of ANY type, fast. Use find_files to locate and read_file to open/parse anything: text, code, JSON, CSV, PDFs, Word/Excel/PowerPoint, images (you receive them to view), or unknown/binary formats (read_file identifies the type, extracts readable text, and opens the file in its app). If a format is unfamiliar, read_file still returns its type + extracted text — reason about the structure from there and explain it. Answer the user's question about the file plainly and precisely, and name the file.",
@@ -64,6 +64,7 @@ You control the user's HOLOGRAPHIC DISPLAY with the \`show\` tool. Be visual, li
 You can READ and SEARCH the user's Gmail with \`gmail_search\` (find an address, look up or check emails — returns senders/subjects/snippets + ids) and \`gmail_read\` (full body of one message by id, for summarizing). Use these to actually look things up instead of saying you can't.
 You can use SLACK when connected: \`slack_search\` to find/read messages, and \`slack_send\` to post a message (channel can be #channel or @person). Confirm before sending a Slack message, same as email. If a Slack action fails because it isn't connected, tell them to click the 💬 button to connect Slack.
 You can SEND EMAIL from the user's connected Gmail with the \`send_email\` tool. Workflow: draft the email (delegate to Echo if helpful), then READ BACK the recipient, subject, and a short summary of the body and ask "shall I send it?"; only after the user clearly confirms, call \`send_email\`. Never send without that confirmation. If sending fails because Gmail isn't connected, tell them to click the 📧 button to connect Gmail.
+CRITICAL — NO EMPTY PROMISES: By the time you write your reply, your tools have ALREADY run this turn; you are reporting the RESULT, not announcing a plan. If more work is needed, CALL THE TOOL NOW — do not describe it. NEVER end your turn with words like "I'm working on it", "building it now", "re-issuing the build", "chasing that confirmation", "standing by", or "I'll report back" — that ends the turn with nothing done and is a failure. Report ONLY what actually happened from the tool results: if a build succeeded, state the REAL scenario name/id the tool returned; if the result was an error, "(no result)", or "BUILD_INCOMPLETE", say plainly that it did NOT work and give the reason — never claim success you didn't get, and never pretend something is in progress.
 You are calm, refined, and efficient — like Jarvis from Iron Man. For each request, delegate to the right specialist(s) when needed (you may delegate more than once); for simple things, answer directly. Reply with a VERY brief spoken answer — ideally one sentence, at most two — natural and composed, no markdown, no bullet points, no URLs (it is read aloud). Address the user directly.`;
 
 const DELEGATE_TOOL = {
@@ -282,9 +283,15 @@ async function makeCall(method, mpath, body) {
   if (!token) throw new Error('Make not connected');
   const opts = { method, headers: { Authorization: 'Token ' + token } };
   if (body) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
-  const res = await fetch('https://' + zone + '.make.com/api/v2' + mpath, opts);
+  // Hard timeout so a stuck Make request can never hang the whole turn (the "takes forever, shows nothing" bug).
+  const ac = new AbortController();
+  const t = setTimeout(() => ac.abort(), 45000);
+  let res;
+  try { res = await fetch('https://' + zone + '.make.com/api/v2' + mpath, Object.assign({}, opts, { signal: ac.signal })); }
+  catch (e) { throw new Error(ac.signal.aborted ? ('Make API timed out after 45s (' + method + ' ' + mpath + ')') : ('Make request failed: ' + ((e && e.message) || e))); }
+  finally { clearTimeout(t); }
   const txt = await res.text();
-  if (!res.ok) throw new Error('Make HTTP ' + res.status + ' ' + txt.slice(0, 180));
+  if (!res.ok) throw new Error('Make HTTP ' + res.status + ' ' + txt.slice(0, 800));  // widened so Wire sees the offending module/field and can self-correct
   try { return JSON.parse(txt); } catch (_) { return txt; }
 }
 async function makeTeam() {
@@ -344,8 +351,18 @@ async function makeAction(inp) {
   if (a === 'create_scenario') {
     const team = await makeTeam();
     const bp = inp.blueprint || {}; if (inp.name && !bp.name) bp.name = inp.name;
-    const r = await makeCall('POST', '/scenarios', { blueprint: JSON.stringify(bp), teamId: team, scheduling: JSON.stringify({ type: 'indefinitely', interval: 900 }) });
-    return 'Created scenario id=' + ((r.scenario && r.scenario.id) || JSON.stringify(r).slice(0, 200)) + ' (created OFF — activate when ready).';
+    // Validate before POSTing — an empty/malformed blueprint just 400s and the model then narrates a fake "built it".
+    if (!bp.name || !Array.isArray(bp.flow) || bp.flow.length === 0) {
+      return 'BUILD_INCOMPLETE: blueprint is missing a name or a non-empty flow[] — NOTHING was created. Emit a full blueprint with real modules and retry.';
+    }
+    if (!bp.metadata) bp.metadata = { instant: false, version: 1 };
+    const first = bp.flow[0] || {};
+    const instant = !!(first.metadata && first.metadata.instant) || /webhook|gateway|instant|mailhook/i.test(first.module || '');
+    const scheduling = instant ? { type: 'immediately' } : { type: 'indefinitely', interval: 900 };
+    const r = await makeCall('POST', '/scenarios', { blueprint: JSON.stringify(bp), teamId: team, scheduling: JSON.stringify(scheduling) });
+    const id = r.scenario && r.scenario.id;
+    if (!id) return 'BUILD_INCOMPLETE: Make returned no scenario id — ' + JSON.stringify(r).slice(0, 300);
+    return 'Created scenario id=' + id + ' name="' + bp.name + '" (created OFF — activate when ready).';
   }
   if (a === 'run_scenario') { const r = await makeCall('POST', '/scenarios/' + inp.scenario_id + '/run', { responsive: false }); return 'Run started: ' + JSON.stringify(r).slice(0, 160); }
   if (a === 'activate') { await makeCall('POST', '/scenarios/' + inp.scenario_id + '/start', {}); return 'Scenario activated.'; }
@@ -1146,14 +1163,23 @@ async function runSubAgent(id, task, emit) {
   emit('agent', { agentId: id, state: a.searching ? 'searching' : 'working' });
   const messages = [{ role: 'user', content: String(task || '') }];
   let text = '';
-  for (let i = 0; i < 8; i++) {
+  for (let i = 0; i < 10; i++) {
+    // max_tokens must be BIG: Wire emits an entire Make blueprint as one tool input;
+    // at 4096 the tool call was truncated (stop_reason:'max_tokens'), so no build ever ran.
+    // cachedSystem() caches the ~13KB Make knowledge pack so 10 loops don't re-bill/re-send it.
     const stream = client.messages.stream({
-      model: 'claude-sonnet-5', max_tokens: 4096, system: a.system,
+      model: 'claude-sonnet-5', max_tokens: 32000, system: cachedSystem(a.system),
       tools: (a.tools && a.tools.length) ? a.tools : undefined, messages,
     });
     const msg = await stream.finalMessage();
     if (msg.stop_reason === 'pause_turn') { messages.push({ role: 'assistant', content: msg.content }); continue; }  // server tool (web_search) → resume
     const toolUses = msg.content.filter((b) => b.type === 'tool_use');
+    if (msg.stop_reason === 'max_tokens' && !toolUses.length) {
+      // Output cut off mid-response (usually a blueprint too large to emit at once) — report honestly, don't return empty.
+      const partial = msg.content.filter((b) => b.type === 'text').map((b) => b.text).join(' ').trim();
+      text = partial || 'BUILD_INCOMPLETE: the output was cut off before the tool call finished — the blueprint is too large to emit in one step. Tell the user honestly it did not build and offer to build it in smaller pieces.';
+      break;
+    }
     if (msg.stop_reason === 'tool_use' && toolUses.length) {   // client tools (e.g. Wire's `make`) → execute
       messages.push({ role: 'assistant', content: msg.content });
       const results = [];
@@ -1177,7 +1203,7 @@ async function runSubAgent(id, task, emit) {
   }
   emit('agent', { agentId: id, state: 'delivering' });
   emit('agent', { agentId: id, state: 'done' });
-  return text || '(no result)';
+  return text || 'BUILD_INCOMPLETE: the specialist ran out of steps before finishing — report this to the user honestly and do NOT claim success.';
 }
 
 // --- The Director orchestrator ----------------------------------------------
@@ -1210,9 +1236,10 @@ ipcMain.handle('orch:ask', async (event, text) => {
   const messages = priorMessages().concat([{ role: 'user', content: userText }]);
   const system = DIRECTOR_SYSTEM + buildMemoryBlock();
   let finalText = '';
+  let nudges = 0;   // how many times we've caught Sea narrating a promise instead of acting
 
   try {
-    for (let turn = 0; turn < 8; turn++) {
+    for (let turn = 0; turn < 10; turn++) {
       const stream = client.messages.stream({
         model: directorModel(), max_tokens: 1024, system: cachedSystem(system), tools: DIRECTOR_TOOLS, messages,
       });
@@ -1358,7 +1385,7 @@ ipcMain.handle('orch:ask', async (event, text) => {
             // Run specialists concurrently — big speedup when several are delegated at once.
             jobs.push((async () => {
               try { results[idx] = { type: 'tool_result', tool_use_id: tu.id, content: await runSubAgent(agentId, inp.task || String(text), emit) }; }
-              catch (e) { results[idx] = { type: 'tool_result', tool_use_id: tu.id, content: '(failed: ' + ((e && e.message) || e) + ')' }; emit('agent', { agentId, state: 'idle' }); }
+              catch (e) { results[idx] = { type: 'tool_result', tool_use_id: tu.id, content: 'FAILED: ' + ((e && e.message) || e), is_error: true }; emit('agent', { agentId, state: 'idle' }); }
             })());
           } else {
             results[idx] = { type: 'tool_result', tool_use_id: tu.id, content: 'Unknown tool.', is_error: true };
@@ -1371,7 +1398,21 @@ ipcMain.handle('orch:ask', async (event, text) => {
       }
 
       finalText = msg.content.filter((b) => b.type === 'text').map((b) => b.text).join(' ').trim();
+      // Structural backstop for the prompt rule: if Sea ends with a PROMISE instead of a real result,
+      // force one corrective turn — either it calls the tool now, or it reports the honest outcome.
+      const promiseRe = /\b(chasing|re-?issu|standing by|stand by|i'?ll report|will report|won'?t relay|working on it|now building|building it|i'?m on it|in progress|circle back|momentarily|shortly)\b/i;
+      if (promiseRe.test(finalText) && nudges < 2) {
+        nudges++;
+        messages.push({ role: 'user', content: 'You ended your turn by promising or narrating a future action instead of reporting a REAL tool result. Either call the tool NOW, or state plainly that it did not work and give the concrete reason from the tool result. Do not say you are "chasing", "confirming", "building it now", or "standing by".' });
+        emit('manager', { state: 'thinking' });
+        continue;
+      }
       break;
+    }
+
+    // Never go silent → standby: an empty final means the loop exhausted or produced nothing usable.
+    if (!finalText.trim()) {
+      finalText = "I couldn't complete that — the specialist returned no usable result. Want me to retry it in smaller steps?";
     }
 
     recordExchange(userText, finalText);   // remember this turn for next time
