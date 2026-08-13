@@ -1,6 +1,6 @@
 {
   "name": "ai-desktop-buddy",
-  "version": "0.54.0",
+  "version": "0.55.0",
   "description": "A desktop AI character (Scout) you can talk to that researches the web and answers out loud.",
   "main": "main.js",
   "scripts": {
